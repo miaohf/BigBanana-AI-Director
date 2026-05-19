@@ -42,7 +42,7 @@ import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveImageModel, getActiveAudioModel } from '../../services/modelRegistry';
+import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel } from '../../services/modelRegistry';
 import { persistVideoReference } from '../../services/videoStorageService';
 import { runKeyframePreflight, runVideoPreflight, formatLintIssues } from '../../services/promptLintService';
 import { assessShotQuality, getProjectAverageQualityScore } from '../../services/qualityAssessmentService';
@@ -57,6 +57,11 @@ interface Props {
   onApiKeyError?: (error: any) => boolean;
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
+
+const getDefaultShotGenerationModel = (): string => {
+  const activeChatModel = getActiveChatModel();
+  return activeChatModel?.apiModel || activeChatModel?.id || 'gpt-5.4';
+};
 
 const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
@@ -1255,7 +1260,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || 'gpt-5.2';
+    const shotGenerationModel = project.shotGenerationModel || getDefaultShotGenerationModel();
     
     // 3. 调用AI拆分
     setIsSplittingShot(true);
@@ -1324,7 +1329,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || 'gpt-5.2';
+    const shotGenerationModel = project.shotGenerationModel || getDefaultShotGenerationModel();
     
     // 3. 显示弹窗并设置生成状态（仅生成面板描述）
     setShowNineGrid(true);
@@ -1533,7 +1538,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
    */
   const handleTranslateNineGridPanels = async () => {
     if (!activeShot?.nineGrid?.panels?.length) return;
-    const model = project.shotGenerationModel || 'gpt-5.2';
+    const model = project.shotGenerationModel || getDefaultShotGenerationModel();
     setIsNineGridTranslating(true);
     try {
       const translations = await translateNineGridPanels(activeShot.nineGrid.panels, model, promptTemplates);
@@ -1576,7 +1581,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return;
     }
 
-    const model = project.shotGenerationModel || 'gpt-5.2';
+    const model = project.shotGenerationModel || getDefaultShotGenerationModel();
     const scene = project.scriptData?.scenes.find(s => String(s.id) === String(activeShot.sceneId));
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
 

@@ -12,6 +12,7 @@ import {
   mapAspectRatioToOpenAiImageSize,
 } from '../imageModelUtils';
 import { ApiKeyError } from './chatAdapter';
+import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../urlUtils';
 
 /**
  * 重试操作
@@ -83,6 +84,8 @@ const MAX_IMAGE_PROMPT_CHARS = 5000;
 const OPENAI_IMAGE_QUALITY = 'medium';
 const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
 const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
+const COMFYUI_POLL_INTERVAL_MS = 1000;
+const COMFYUI_MAX_POLLS = 180;
 
 const truncatePromptToMaxChars = (
   input: string,
@@ -130,6 +133,191 @@ const extractImageFromOpenAiResponse = (response: any): string | null => {
   return null;
 };
 
+const blobToDataUrl = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image blob.'));
+    reader.readAsDataURL(blob);
+  });
+
+const mapAspectRatioToComfySize = (aspectRatio: AspectRatio): { width: number; height: number } => {
+  switch (aspectRatio) {
+    case '9:16':
+      return { width: 576, height: 1024 };
+    case '1:1':
+      return { width: 1024, height: 1024 };
+    case '16:9':
+    default:
+      return { width: 1024, height: 576 };
+  }
+};
+
+const resolveWorkflowTemplateUrls = (workflowName: string): string[] => {
+  const trimmed = workflowName.trim();
+  if (!trimmed) {
+    throw new Error('ComfyUI 工作流名称为空，请在图片模型中配置 workflowName。');
+  }
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
+    return [trimmed];
+  }
+  const baseName = trimmed.endsWith('.json') ? trimmed.slice(0, -5) : trimmed;
+  const candidates = [
+    baseName,
+    baseName.replace(/-/g, '_'),
+    baseName.replace(/_/g, '-'),
+  ];
+  return Array.from(new Set(candidates)).map(name => `/workflows/${encodeURIComponent(`${name}.json`)}`);
+};
+
+const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
+  const urls = resolveWorkflowTemplateUrls(workflowName);
+  for (const url of urls) {
+    console.info('[ComfyUI Image] Loading workflow template:', url);
+    const response = await fetch(url, { cache: 'no-store' });
+    if (response.ok) {
+      console.info('[ComfyUI Image] Workflow template loaded:', url);
+      return response.json();
+    }
+    console.warn('[ComfyUI Image] Workflow template not found:', url, response.status);
+  }
+  throw new Error(`ComfyUI 工作流模板加载失败：已尝试 ${urls.join('、')}`);
+};
+
+const patchComfyWorkflow = (
+  workflow: any,
+  options: {
+    prompt: string;
+    width: number;
+    height: number;
+    seed: number;
+    steps: number;
+  }
+): any => {
+  const patched = structuredClone(workflow);
+  const nodes = patched?.prompt || patched;
+  if (!nodes || typeof nodes !== 'object') {
+    throw new Error('ComfyUI 工作流模板格式无效：需要 API Format JSON。');
+  }
+
+  let promptPatched = false;
+  Object.values(nodes).forEach((node: any) => {
+    const inputs = node?.inputs;
+    if (!inputs || typeof inputs !== 'object') return;
+    const classType = String(node.class_type || '').toLowerCase();
+
+    if ('text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
+      inputs.text = options.prompt;
+      promptPatched = true;
+    }
+    if ('prompt' in inputs && typeof inputs.prompt === 'string') {
+      inputs.prompt = options.prompt;
+      promptPatched = true;
+    }
+    if ('positive' in inputs && typeof inputs.positive === 'string') {
+      inputs.positive = options.prompt;
+      promptPatched = true;
+    }
+    if ('width' in inputs && typeof inputs.width === 'number') inputs.width = options.width;
+    if ('height' in inputs && typeof inputs.height === 'number') inputs.height = options.height;
+    if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
+    if ('noise_seed' in inputs && typeof inputs.noise_seed === 'number') inputs.noise_seed = options.seed;
+    if ('steps' in inputs && typeof inputs.steps === 'number') inputs.steps = options.steps;
+  });
+
+  if (!promptPatched) {
+    throw new Error('ComfyUI 工作流模板中没有找到可替换的 prompt 文本节点。');
+  }
+
+  return nodes;
+};
+
+const buildComfyViewUrl = (apiBase: string, image: any): string => {
+  const params = new URLSearchParams();
+  params.set('filename', String(image.filename || ''));
+  if (image.subfolder) params.set('subfolder', String(image.subfolder));
+  if (image.type) params.set('type', String(image.type));
+  return `${apiBase}/view?${params.toString()}`;
+};
+
+const callComfyImageApi = async (
+  apiBase: string,
+  workflowName: string,
+  options: {
+    prompt: string;
+    aspectRatio: AspectRatio;
+    steps: number;
+  }
+): Promise<string> => {
+  try {
+    console.info('[ComfyUI Image] Start generation:', { apiBase, workflowName });
+    const workflow = await loadComfyWorkflowTemplate(workflowName);
+    const { width, height } = mapAspectRatioToComfySize(options.aspectRatio);
+    const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const prompt = patchComfyWorkflow(workflow, {
+      prompt: options.prompt,
+      width,
+      height,
+      seed,
+      steps: options.steps,
+    });
+    console.info('[ComfyUI Image] Workflow patched:', { width, height, seed, steps: options.steps });
+
+    const clientId = `bigbanana-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const promptUrl = `${apiBase}/prompt`;
+    console.info('[ComfyUI Image] POST prompt:', promptUrl);
+    const queueResponse = await fetch(promptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, client_id: clientId }),
+    });
+
+    if (!queueResponse.ok) {
+      const backendMessage = await parseHttpErrorBody(queueResponse);
+      throw new Error(`ComfyUI 提交工作流失败：${backendMessage}`);
+    }
+
+    const queued = await queueResponse.json();
+    const promptId = queued?.prompt_id;
+    if (!promptId) {
+      throw new Error('ComfyUI 未返回 prompt_id。');
+    }
+    console.info('[ComfyUI Image] Queued prompt:', promptId);
+
+    for (let i = 0; i < COMFYUI_MAX_POLLS; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, COMFYUI_POLL_INTERVAL_MS));
+      const historyUrl = `${apiBase}/history/${promptId}`;
+      const historyResponse = await fetch(historyUrl);
+      if (!historyResponse.ok) {
+        if (i % 10 === 0) console.warn('[ComfyUI Image] History polling failed:', historyUrl, historyResponse.status);
+        continue;
+      }
+      const history = await historyResponse.json();
+      const record = history?.[promptId];
+      const outputs = record?.outputs;
+      if (!outputs) continue;
+
+      for (const output of Object.values(outputs) as any[]) {
+        const image = output?.images?.[0];
+        if (!image?.filename) continue;
+        const viewUrl = buildComfyViewUrl(apiBase, image);
+        console.info('[ComfyUI Image] Fetch output:', viewUrl);
+        const viewResponse = await fetch(viewUrl);
+        if (!viewResponse.ok) {
+          const backendMessage = await parseHttpErrorBody(viewResponse);
+          throw new Error(`ComfyUI 图片读取失败：${backendMessage}`);
+        }
+        return blobToDataUrl(await viewResponse.blob());
+      }
+    }
+
+    throw new Error('ComfyUI 图片生成超时，请检查队列或工作流输出节点。');
+  } catch (error) {
+    console.error('[ComfyUI Image] Generation failed:', error);
+    throw error;
+  }
+};
+
 /**
  * 调用图片生成 API
  */
@@ -143,12 +331,6 @@ export const callImageApi = async (
     throw new Error('没有可用的图片模型');
   }
 
-  // 获取 API 配置
-  const apiKey = getApiKeyForModel(activeModel.id);
-  if (!apiKey) {
-    throw new ApiKeyError('API Key 缺失，请在设置中配置 API Key');
-  }
-  
   const apiBase = getApiBaseUrlForModel(activeModel.id);
   const apiModel = activeModel.apiModel || activeModel.id;
   const apiFormat = getImageApiFormat(activeModel);
@@ -198,6 +380,22 @@ export const callImageApi = async (
   }
   finalPrompt = promptLimitResult.text;
 
+  if (apiFormat === 'comfyui') {
+    const comfyApiBase = resolveComfyApiBaseUrl(apiBase, activeModel.endpoint);
+    const workflowName = activeModel.params.workflowName || apiModel;
+    return callComfyImageApi(comfyApiBase, workflowName, {
+      prompt: finalPrompt,
+      aspectRatio,
+      steps: activeModel.params.steps || 20,
+    });
+  }
+
+  // 获取 API 配置（ComfyUI 本地工作流不需要 API Key）
+  const apiKey = getApiKeyForModel(activeModel.id);
+  if (!apiKey) {
+    throw new ApiKeyError('API Key 缺失，请在设置中配置 API Key');
+  }
+
   if (apiFormat === 'openai') {
     const hasReferenceImages = Boolean(options.referenceImages?.length);
     const resolvedEndpoint = resolveOpenAiImageEndpoint(endpoint, hasReferenceImages);
@@ -224,7 +422,7 @@ export const callImageApi = async (
         formData.append('n', '1');
         files.forEach(file => formData.append('image[]', file));
 
-        res = await fetch(`${apiBase}${resolvedEndpoint}`, {
+        res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -243,7 +441,7 @@ export const callImageApi = async (
           n: 1,
         };
 
-        res = await fetch(`${apiBase}${resolvedEndpoint}`, {
+        res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -300,7 +498,7 @@ export const callImageApi = async (
   };
 
   const response = await retryOperation(async () => {
-    const res = await fetch(`${apiBase}${endpoint}`, {
+    const res = await fetch(resolveEndpointUrl(apiBase, endpoint), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

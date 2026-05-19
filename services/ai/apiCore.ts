@@ -23,6 +23,7 @@ import {
 } from '../modelRegistry';
 import { fetchMediaWithCorsFallback } from '../mediaFetchService';
 import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from '../modelIdUtils';
+import { resolveEndpointUrl } from '../urlUtils';
 
 // ============================================
 // Script progress callback
@@ -153,9 +154,9 @@ export const getApiBase = (type: 'chat' | 'image' | 'video' | 'audio' = 'chat', 
 export const getActiveChatModelName = (): string => {
   try {
     const model = getActiveChatModel();
-    return model?.apiModel || model?.id || 'gpt-5.2';
+    return model?.apiModel || model?.id || DEFAULT_CHAT_VERIFY_MODEL;
   } catch {
-    return 'gpt-5.2';
+    return DEFAULT_CHAT_VERIFY_MODEL;
   }
 };
 
@@ -461,7 +462,7 @@ export const parseHttpError = async (response: Response): Promise<Error> => {
 /** Non-stream chat completion */
 export const chatCompletion = async (
   prompt: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   temperature: number = 0.7,
   maxTokens: number = 8192,
   responseFormat?: 'json_object',
@@ -509,7 +510,7 @@ export const chatCompletion = async (
     const endpoint = resolved?.endpoint || '/v1/chat/completions';
 
     const executeRequest = async (body: any): Promise<Response> => {
-      const response = await fetch(`${apiBase}${endpoint}`, {
+      const response = await fetch(resolveEndpointUrl(apiBase, endpoint), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -564,7 +565,7 @@ export const chatCompletion = async (
 /** Streaming chat completion (SSE) */
 export const chatCompletionStream = async (
   prompt: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   temperature: number = 0.7,
   responseFormat: 'json_object' | undefined,
   timeout: number = 600000,
@@ -609,7 +610,7 @@ export const chatCompletionStream = async (
     const endpoint = resolved?.endpoint || '/v1/chat/completions';
 
     const executeRequest = async (body: any): Promise<Response> => {
-      const response = await fetch(`${apiBase}${endpoint}`, {
+      const response = await fetch(resolveEndpointUrl(apiBase, endpoint), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -21,8 +21,9 @@ export type AspectRatio = '16:9' | '9:16' | '1:1';
  * 图片模型 API 协议类型
  * gemini: Google generateContent 风格
  * openai: OpenAI Images API 风格
+ * comfyui: ComfyUI workflow API 风格
  */
-export type ImageApiFormat = 'gemini' | 'openai';
+export type ImageApiFormat = 'gemini' | 'openai' | 'comfyui';
 
 /**
  * 视频时长类型（仅异步视频模式支持）
@@ -32,7 +33,7 @@ export type VideoDuration = 4 | 5 | 8 | 10 | 12 | 15;
 /**
  * 视频生成模式
  */
-export type VideoMode = 'sync' | 'async';
+export type VideoMode = 'sync' | 'async' | 'comfyui';
 
 /**
  * 音频输出格式
@@ -61,17 +62,21 @@ export interface ImageModelParams {
   defaultAspectRatio: AspectRatio;
   supportedAspectRatios: AspectRatio[];
   apiFormat?: ImageApiFormat;
+  workflowName?: string;
+  steps?: number;
 }
 
 /**
  * 视频模型参数
  */
 export interface VideoModelParams {
-  mode: VideoMode;                        // sync=Veo, async=Sora
+  mode: VideoMode;                        // sync=Veo, async=Sora, comfyui=ComfyUI workflow
   defaultAspectRatio: AspectRatio;
   supportedAspectRatios: AspectRatio[];
   defaultDuration: VideoDuration;
   supportedDurations: VideoDuration[];
+  workflowName?: string;
+  steps?: number;
 }
 
 /**
@@ -256,6 +261,17 @@ export const DEFAULT_IMAGE_PARAMS_OPENAI: ImageModelParams = {
 };
 
 /**
+ * ComfyUI Workflow 默认参数
+ */
+export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
+  defaultAspectRatio: '16:9',
+  supportedAspectRatios: ['16:9', '9:16', '1:1'],
+  apiFormat: 'comfyui',
+  workflowName: 'flux-dev-fp8',
+  steps: 20,
+};
+
+/**
  * 默认视频模型参数 (Veo 首尾帧模式)
  */
 export const DEFAULT_VIDEO_PARAMS_VEO: VideoModelParams = {
@@ -314,6 +330,19 @@ export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_2_0: VideoModelParams = {
   supportedAspectRatios: ['16:9', '9:16'],
   defaultDuration: 5,
   supportedDurations: [5, 10, 15],
+};
+
+/**
+ * ComfyUI Workflow 默认视频参数
+ */
+export const DEFAULT_VIDEO_PARAMS_COMFYUI: VideoModelParams = {
+  mode: 'comfyui',
+  defaultAspectRatio: '16:9',
+  supportedAspectRatios: ['16:9', '9:16', '1:1'],
+  defaultDuration: 5,
+  supportedDurations: [5, 10, 15],
+  workflowName: 'video-workflow',
+  steps: 20,
 };
 
 /**
@@ -585,7 +614,7 @@ export const ALL_BUILTIN_MODELS: ModelDefinition[] = [
  * 默认激活模型
  */
 export const DEFAULT_ACTIVE_MODELS: ActiveModels = {
-  chat: 'gpt-5.2',
+  chat: 'gpt-5.4',
   image: 'gemini-3-pro-image-preview',
   video: 'sora-2',
   audio: 'gpt-audio-1.5',

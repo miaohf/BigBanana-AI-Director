@@ -31,7 +31,7 @@ const DEFAULT_PROVIDER: ModelProvider = {
 const DEFAULT_CONFIG: ModelConfig = {
   chatModel: {
     providerId: 'antsk',
-    modelName: 'gpt-5.2',
+    modelName: 'gpt-5.4',
     endpoint: '/v1/chat/completions'
   },
   imageModel: {
@@ -82,6 +82,10 @@ export const loadModelConfig = (): ModelManagerState => {
       const normalizedChatModelName = normalizeChatModelId(currentChatModelName);
       if (currentChatModelName && normalizedChatModelName !== currentChatModelName) {
         parsed.currentConfig.chatModel.modelName = normalizedChatModelName!;
+        shouldPersistMigration = true;
+      }
+      if (parsed.currentConfig?.chatModel?.modelName === 'gpt-5.2') {
+        parsed.currentConfig.chatModel.modelName = DEFAULT_CONFIG.chatModel.modelName;
         shouldPersistMigration = true;
       }
       // 迁移旧的 Veo 同步模型名到 Veo Fast（异步）
@@ -400,9 +404,9 @@ export const resetToDefault = (): void => {
  * 预定义的对话模型列表
  */
 export const AVAILABLE_CHAT_MODELS = [
-  { name: 'GPT-5.2', value: 'gpt-5.2', description: '综合能力最强，适合复杂任务' },
+  { name: 'GPT-5.4', value: 'gpt-5.4', description: '默认模型，适合长文本处理' },
+  { name: 'GPT-5.2', value: 'gpt-5.2', description: '综合能力强，适合复杂任务' },
   { name: 'GPT-5.1', value: 'gpt-5.1', description: '旗舰通用模型，稳定可靠' },
-  { name: 'GPT-5.4', value: 'gpt-5.4', description: '高性价比，适合长文本处理' },
   { name: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6', description: '速度与智能平衡，代码/Agent 友好' },
   { name: 'Claude Opus 4.6', value: 'claude-opus-4-6-20260205', description: '复杂推理与高难任务优先' },
   { name: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929', description: '均衡稳定，适合高频文本任务' },

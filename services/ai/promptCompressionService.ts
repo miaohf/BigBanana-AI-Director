@@ -58,7 +58,7 @@ export const compressPromptWithLLM = async (
   const originalLength = countChars(originalText);
   const maxChars = Math.max(200, Math.floor(options.maxChars || 0));
   const mode: PromptCompressionMode = options.mode || 'generic';
-  const model = options.model || getActiveChatModelName() || 'gpt-5.2';
+  const model = options.model || getActiveChatModelName();
 
   if (originalLength <= maxChars) {
     return {

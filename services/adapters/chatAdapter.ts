@@ -6,6 +6,7 @@
 import { ChatModelDefinition, ChatOptions, ChatModelParams } from '../../types/model';
 import { getApiKeyForModel, getApiBaseUrlForModel, getActiveChatModel } from '../modelRegistry';
 import { DEFAULT_CHAT_VERIFY_MODEL } from '../modelIdUtils';
+import { resolveEndpointUrl } from '../urlUtils';
 
 /**
  * API Key 错误类
@@ -16,6 +17,12 @@ export class ApiKeyError extends Error {
     this.name = 'ApiKeyError';
   }
 }
+
+const normalizeChatApiBase = (baseUrl?: string): { url: string; endpoint: string } => {
+  const url = (baseUrl || 'https://api.antsk.cn').replace(/\/+$/, '');
+  const endpoint = /\/v1$/i.test(url) ? '/chat/completions' : '/v1/chat/completions';
+  return { url, endpoint };
+};
 
 /**
  * 重试操作
@@ -132,7 +139,7 @@ export const callChatApi = async (
   
   try {
     const response = await retryOperation(async () => {
-      const res = await fetch(`${apiBase}${endpoint}`, {
+      const res = await fetch(resolveEndpointUrl(apiBase, endpoint), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -182,18 +189,22 @@ export const callChatApi = async (
 /**
  * 验证 API Key
  */
-export const verifyApiKey = async (apiKey: string, baseUrl?: string): Promise<{ success: boolean; message: string }> => {
+export const verifyApiKey = async (
+  apiKey: string,
+  baseUrl?: string,
+  modelName: string = DEFAULT_CHAT_VERIFY_MODEL
+): Promise<{ success: boolean; message: string }> => {
   try {
-    const url = baseUrl || 'https://api.antsk.cn';
+    const { url, endpoint } = normalizeChatApiBase(baseUrl);
     
-    const response = await fetch(`${url}/v1/chat/completions`, {
+    const response = await fetch(`${url}${endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: DEFAULT_CHAT_VERIFY_MODEL,
+        model: modelName,
         messages: [{ role: 'user', content: '仅返回1' }],
         temperature: 0.1,
         max_tokens: 5,

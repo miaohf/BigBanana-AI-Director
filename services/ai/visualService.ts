@@ -11,6 +11,7 @@ import {
   checkApiKey,
   getApiBase,
   getActiveModel,
+  getActiveChatModelName,
   resolveModel,
   logScriptProgress,
   parseHttpError,
@@ -28,6 +29,8 @@ import {
   resolveOpenAiImageEndpoint,
   mapAspectRatioToOpenAiImageSize,
 } from '../imageModelUtils';
+import { callImageApi } from '../adapters/imageAdapter';
+import { resolveEndpointUrl } from '../urlUtils';
 
 // ============================================
 // 美术指导文档生成
@@ -45,7 +48,7 @@ export const generateArtDirection = async (
   scenes: { location: string; time: string; atmosphere: string }[],
   visualStyle: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   abortSignal?: AbortSignal
 ): Promise<ArtDirection> => {
   console.log('🎨 generateArtDirection 调用 - 生成全局美术指导文档');
@@ -161,7 +164,7 @@ export const generateAllCharacterPrompts = async (
   genre: string,
   visualStyle: string,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   abortSignal?: AbortSignal
 ): Promise<{ visualPrompt: string; negativePrompt: string }[]> => {
   console.log(`🎭 generateAllCharacterPrompts 调用 - 批量生成 ${characters.length} 个角色的视觉提示词`);
@@ -294,7 +297,7 @@ export const generateVisualPrompts = async (
   type: 'character' | 'scene' | 'prop',
   data: Character | Scene | Prop,
   genre: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   visualStyle: string = 'live-action',
   language: string = '中文',
   artDirection?: ArtDirection,
@@ -843,7 +846,7 @@ export const generateImage = async (
   const imageApiFormat = getImageApiFormat(activeImageModel as any);
   const imageModelEndpointTemplate = activeImageModel?.endpoint || getDefaultImageEndpoint(imageApiFormat, imageModelId);
   const imageModelEndpoint = imageModelEndpointTemplate.replace('{model}', imageModelId);
-  const apiKey = checkApiKey('image', activeImageModel?.id);
+  const apiKey = imageApiFormat === 'comfyui' ? '' : checkApiKey('image', activeImageModel?.id);
   const apiBase = getApiBase('image', activeImageModel?.id);
 
   try {
@@ -1016,6 +1019,23 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
     }
     finalPrompt = promptLimitResult.text;
 
+    if (imageApiFormat === 'comfyui') {
+      const imageUrl = await callImageApi({
+        prompt: finalPrompt,
+        aspectRatio,
+      }, activeImageModel as any);
+      addRenderLogWithTokens({
+        type: 'keyframe',
+        resourceId: 'image-' + Date.now(),
+        resourceName: prompt.substring(0, 50) + '...',
+        status: 'success',
+        model: imageModelId,
+        prompt,
+        duration: Date.now() - startTime
+      });
+      return imageUrl;
+    }
+
     const openAiReferenceSources = [...effectiveReferenceImages];
 
     if (imageApiFormat === 'openai') {
@@ -1043,7 +1063,7 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
           formData.append('n', '1');
           files.forEach(file => formData.append('image[]', file));
 
-          res = await fetch(`${apiBase}${openAiEndpoint}`, {
+          res = await fetch(resolveEndpointUrl(apiBase, openAiEndpoint), {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${apiKey}`,
@@ -1062,7 +1082,7 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
             n: 1,
           };
 
-          res = await fetch(`${apiBase}${openAiEndpoint}`, {
+          res = await fetch(resolveEndpointUrl(apiBase, openAiEndpoint), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1128,7 +1148,7 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
     };
 
     const response = await retryOperation(async () => {
-      const res = await fetch(`${apiBase}${imageModelEndpoint}`, {
+      const res = await fetch(resolveEndpointUrl(apiBase, imageModelEndpoint), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1256,7 +1276,7 @@ export const generateCharacterTurnaroundPanels = async (
   visualStyle: string,
   artDirection?: ArtDirection,
   language: string = '中文',
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   abortSignal?: AbortSignal
 ): Promise<CharacterTurnaroundPanel[]> => {
   console.log(`🎭 generateCharacterTurnaroundPanels - 为角色 ${character.name} 生成九宫格造型视角`);

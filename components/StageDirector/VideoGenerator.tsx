@@ -174,7 +174,11 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         >
           {videoModels.map((model) => {
             const vm = model as VideoModelDefinition;
-            const modeLabel = vm.params.mode === 'async' ? '异步' : '同步';
+            const modeLabel = vm.params.mode === 'comfyui'
+              ? 'ComfyUI'
+              : vm.params.mode === 'async'
+                ? '异步'
+                : '同步';
             const recommendationLabel = getRecommendedModeLabel(model.id);
             return (
               <option key={model.id} value={model.id}>
@@ -186,7 +190,9 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         {selectedModel && (
           <p className="text-[9px] text-[var(--text-muted)] font-mono">
             ✦ {selectedModel.name}:
-            {selectedModel.params.mode === 'async'
+            {selectedModel.params.mode === 'comfyui'
+              ? ` ComfyUI 工作流，支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒`
+              : selectedModel.params.mode === 'async'
               ? ` 支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒`
               : ` 同步模式，支持 ${selectedModel.params.supportedAspectRatios.join('/')}`}
             {` ｜${getRecommendedModeLabel(effectiveModelId || selectedModel.id)}`}

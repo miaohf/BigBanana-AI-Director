@@ -146,7 +146,11 @@ export const VideoModelSelector: React.FC<{
         >
           {models.map((model) => {
             const videoModel = model as VideoModelDefinition;
-            const modeLabel = videoModel.params.mode === 'async' ? '异步' : '同步';
+            const modeLabel = videoModel.params.mode === 'comfyui'
+              ? 'ComfyUI'
+              : videoModel.params.mode === 'async'
+                ? '异步'
+                : '同步';
             return (
               <option key={model.id} value={model.id}>
                 {model.name} ({modeLabel})
@@ -158,7 +162,13 @@ export const VideoModelSelector: React.FC<{
       </div>
       {selectedModel && (
         <p className="text-[9px] text-[var(--text-muted)]">
-          模式: {selectedModel.params.mode === 'async' ? '异步（需要轮询）' : '同步（直接返回）'}
+          模式: {
+            selectedModel.params.mode === 'comfyui'
+              ? 'ComfyUI Workflow'
+              : selectedModel.params.mode === 'async'
+                ? '异步（需要轮询）'
+                : '同步（直接返回）'
+          }
           {selectedModel.params.supportedDurations.length > 1 && 
             ` · 支持时长: ${selectedModel.params.supportedDurations.join('/')}秒`
           }

@@ -6,6 +6,7 @@
 import { VideoModelDefinition, VideoGenerateOptions, AspectRatio, VideoDuration } from '../../types/model';
 import { getApiKeyForModel, getApiBaseUrlForModel, getActiveVideoModel } from '../modelRegistry';
 import { ApiKeyError } from './chatAdapter';
+import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../urlUtils';
 
 /**
  * 重试操作
@@ -106,6 +107,241 @@ const SORA_COMPATIBLE_VIDEO_MODELS = new Set([
 const isSoraCompatibleVideoModel = (modelName: string): boolean =>
   SORA_COMPATIBLE_VIDEO_MODELS.has((modelName || '').trim().toLowerCase());
 
+const COMFYUI_POLL_INTERVAL_MS = 2000;
+const COMFYUI_MAX_POLLS = 600;
+
+const parseHttpErrorBody = async (res: Response): Promise<string> => {
+  let errorMessage = `HTTP 错误: ${res.status}`;
+  try {
+    const errorData = await res.json();
+    errorMessage = errorData.error?.message || errorData.message || errorMessage;
+  } catch {
+    try {
+      const errorText = await res.text();
+      if (errorText) errorMessage = errorText;
+    } catch {
+      // ignore
+    }
+  }
+  return errorMessage;
+};
+
+const dataUrlToBlob = (dataUrl: string): Blob => {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('ComfyUI 视频工作流参考图格式无效。');
+  }
+  const mimeType = match[1];
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+};
+
+const resolveWorkflowTemplateUrl = (workflowName: string): string => {
+  const trimmed = workflowName.trim();
+  if (!trimmed) {
+    throw new Error('ComfyUI 视频工作流名称为空，请在视频模型中配置 workflowName。');
+  }
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
+    return trimmed;
+  }
+  const filename = trimmed.endsWith('.json') ? trimmed : `${trimmed}.json`;
+  return `/workflows/${encodeURIComponent(filename)}`;
+};
+
+const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
+  const url = resolveWorkflowTemplateUrl(workflowName);
+  console.info('[ComfyUI Video] Loading workflow template:', url);
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`ComfyUI 视频工作流模板加载失败：${url}（HTTP ${response.status}）`);
+  }
+  console.info('[ComfyUI Video] Workflow template loaded:', url);
+  return response.json();
+};
+
+const uploadComfyImage = async (apiBase: string, imageDataUrl: string, filename: string): Promise<string> => {
+  const formData = new FormData();
+  formData.append('image', dataUrlToBlob(imageDataUrl), filename);
+  formData.append('overwrite', 'true');
+  const uploadUrl = `${apiBase}/upload/image`;
+  console.info('[ComfyUI Video] Upload reference image:', uploadUrl, filename);
+  const response = await fetch(uploadUrl, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await parseHttpErrorBody(response);
+    throw new Error(`ComfyUI 参考图上传失败：${detail}`);
+  }
+  const result = await response.json();
+  return result?.name || filename;
+};
+
+const patchComfyVideoWorkflow = (
+  workflow: any,
+  options: {
+    prompt: string;
+    width: number;
+    height: number;
+    seed: number;
+    steps: number;
+    duration: number;
+    startImageName?: string;
+    endImageName?: string;
+  }
+): any => {
+  const patched = structuredClone(workflow);
+  const nodes = patched?.prompt || patched;
+  if (!nodes || typeof nodes !== 'object') {
+    throw new Error('ComfyUI 视频工作流模板格式无效：需要 API Format JSON。');
+  }
+
+  let promptPatched = false;
+  let firstImagePatched = false;
+  Object.values(nodes).forEach((node: any) => {
+    const inputs = node?.inputs;
+    if (!inputs || typeof inputs !== 'object') return;
+    const classType = String(node.class_type || '').toLowerCase();
+
+    if ('text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
+      inputs.text = options.prompt;
+      promptPatched = true;
+    }
+    if ('prompt' in inputs && typeof inputs.prompt === 'string') {
+      inputs.prompt = options.prompt;
+      promptPatched = true;
+    }
+    if ('positive' in inputs && typeof inputs.positive === 'string') {
+      inputs.positive = options.prompt;
+      promptPatched = true;
+    }
+    if ('width' in inputs && typeof inputs.width === 'number') inputs.width = options.width;
+    if ('height' in inputs && typeof inputs.height === 'number') inputs.height = options.height;
+    if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
+    if ('noise_seed' in inputs && typeof inputs.noise_seed === 'number') inputs.noise_seed = options.seed;
+    if ('steps' in inputs && typeof inputs.steps === 'number') inputs.steps = options.steps;
+    if ('duration' in inputs && typeof inputs.duration === 'number') inputs.duration = options.duration;
+    if ('seconds' in inputs && typeof inputs.seconds === 'number') inputs.seconds = options.duration;
+
+    if (options.startImageName && 'image' in inputs && typeof inputs.image === 'string') {
+      inputs.image = firstImagePatched && options.endImageName ? options.endImageName : options.startImageName;
+      firstImagePatched = true;
+    }
+  });
+
+  if (!promptPatched) {
+    throw new Error('ComfyUI 视频工作流模板中没有找到可替换的 prompt 文本节点。');
+  }
+
+  return nodes;
+};
+
+const buildComfyViewUrl = (apiBase: string, file: any): string => {
+  const params = new URLSearchParams();
+  params.set('filename', String(file.filename || ''));
+  if (file.subfolder) params.set('subfolder', String(file.subfolder));
+  if (file.type) params.set('type', String(file.type));
+  return `${apiBase}/view?${params.toString()}`;
+};
+
+const callComfyVideoApi = async (
+  options: VideoGenerateOptions,
+  model: VideoModelDefinition,
+  apiBase: string
+): Promise<string> => {
+  try {
+    const aspectRatio = options.aspectRatio || model.params.defaultAspectRatio;
+    const duration = Number(options.duration || model.params.defaultDuration || 5);
+    const { width, height } = getSizeFromAspectRatio(aspectRatio);
+    const workflowName = model.params.workflowName || model.apiModel || model.id;
+    console.info('[ComfyUI Video] Start generation:', { apiBase, workflowName });
+    const workflow = await loadComfyWorkflowTemplate(workflowName);
+    const startImageName = options.startImage
+      ? await uploadComfyImage(apiBase, options.startImage, `bigbanana-start-${Date.now()}.png`)
+      : undefined;
+    const endImageName = options.endImage
+      ? await uploadComfyImage(apiBase, options.endImage, `bigbanana-end-${Date.now()}.png`)
+      : undefined;
+    const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const prompt = patchComfyVideoWorkflow(workflow, {
+      prompt: options.prompt,
+      width,
+      height,
+      seed,
+      steps: model.params.steps || 20,
+      duration,
+      startImageName,
+      endImageName,
+    });
+    console.info('[ComfyUI Video] Workflow patched:', { width, height, seed, steps: model.params.steps || 20, duration });
+
+    const clientId = `bigbanana-video-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const promptUrl = `${apiBase}/prompt`;
+    console.info('[ComfyUI Video] POST prompt:', promptUrl);
+    const queueResponse = await fetch(promptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, client_id: clientId }),
+    });
+    if (!queueResponse.ok) {
+      const detail = await parseHttpErrorBody(queueResponse);
+      throw new Error(`ComfyUI 提交视频工作流失败：${detail}`);
+    }
+
+    const queued = await queueResponse.json();
+    const promptId = queued?.prompt_id;
+    if (!promptId) {
+      throw new Error('ComfyUI 未返回 prompt_id。');
+    }
+    console.info('[ComfyUI Video] Queued prompt:', promptId);
+
+    for (let i = 0; i < COMFYUI_MAX_POLLS; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, COMFYUI_POLL_INTERVAL_MS));
+      const historyUrl = `${apiBase}/history/${promptId}`;
+      const historyResponse = await fetch(historyUrl);
+      if (!historyResponse.ok) {
+        if (i % 10 === 0) console.warn('[ComfyUI Video] History polling failed:', historyUrl, historyResponse.status);
+        continue;
+      }
+      const history = await historyResponse.json();
+      const outputs = history?.[promptId]?.outputs;
+      if (!outputs) continue;
+
+      for (const output of Object.values(outputs) as any[]) {
+        const file = output?.videos?.[0] || output?.gifs?.[0] || output?.images?.[0];
+        if (!file?.filename) continue;
+        const viewUrl = buildComfyViewUrl(apiBase, file);
+        console.info('[ComfyUI Video] Fetch output:', viewUrl);
+        const viewResponse = await fetch(viewUrl);
+        if (!viewResponse.ok) {
+          const detail = await parseHttpErrorBody(viewResponse);
+          throw new Error(`ComfyUI 视频读取失败：${detail}`);
+        }
+        const videoBlob = await viewResponse.blob();
+        return new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            if (result && result.startsWith('data:')) resolve(result);
+            else reject(new Error('ComfyUI 视频转换失败'));
+          };
+          reader.onerror = () => reject(new Error('ComfyUI 视频读取失败'));
+          reader.readAsDataURL(videoBlob);
+        });
+      }
+    }
+
+    throw new Error('ComfyUI 视频生成超时，请检查队列或工作流输出节点。');
+  } catch (error) {
+    console.error('[ComfyUI Video] Generation failed:', error);
+    throw error;
+  }
+};
+
 /**
  * 调用同步 chat/completions 视频 API
  */
@@ -143,7 +379,7 @@ const callSyncChatVideoApi = async (
 
   try {
     const response = await retryOperation(async () => {
-      const res = await fetch(`${apiBase}/v1/chat/completions`, {
+      const res = await fetch(resolveEndpointUrl(apiBase, model.endpoint || '/v1/chat/completions'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -241,6 +477,7 @@ const callSoraApi = async (
   const resolvedModel = apiModel || 'sora-2';
   const isSoraCompatibleModel = isSoraCompatibleVideoModel(resolvedModel);
   const useReferenceArray = resolvedModel.toLowerCase().startsWith('veo_3_1-fast');
+  const videosUrl = resolveEndpointUrl(apiBase, model.endpoint || '/v1/videos');
 
   if (isSoraCompatibleModel && references.length >= 2) {
     console.warn('⚠️ Capability routing: sora-2 only supports start-frame reference. End-frame reference will be ignored.');
@@ -285,7 +522,7 @@ const callSoraApi = async (
   }
 
   // 创建任务请求
-  const createResponse = await fetch(`${apiBase}/v1/videos`, {
+  const createResponse = await fetch(videosUrl, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -332,7 +569,7 @@ const callSoraApi = async (
   while (Date.now() - startTime < maxPollingTime) {
     await new Promise(resolve => setTimeout(resolve, pollingInterval));
     
-    const statusResponse = await fetch(`${apiBase}/v1/videos/${taskId}`, {
+    const statusResponse = await fetch(`${videosUrl}/${taskId}`, {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
@@ -388,7 +625,7 @@ const callSoraApi = async (
       const downloadController = new AbortController();
       const downloadTimeoutId = setTimeout(() => downloadController.abort(), downloadTimeout);
       
-      const downloadResponse = await fetch(`${apiBase}/v1/videos/${videoId}/content`, {
+      const downloadResponse = await fetch(`${videosUrl}/${videoId}/content`, {
         method: 'GET',
         headers: {
           'Accept': '*/*',
@@ -449,13 +686,17 @@ export const callVideoApi = async (
     throw new Error('没有可用的视频模型');
   }
 
+  const apiBase = getApiBaseUrlForModel(activeModel.id);
+
+  if (activeModel.params.mode === 'comfyui') {
+    return callComfyVideoApi(options, activeModel, resolveComfyApiBaseUrl(apiBase, activeModel.endpoint));
+  }
+
   // 获取 API 配置
   const apiKey = getApiKeyForModel(activeModel.id);
   if (!apiKey) {
     throw new ApiKeyError('API Key 缺失，请在设置中配置 API Key');
   }
-  
-  const apiBase = getApiBaseUrlForModel(activeModel.id);
 
   // 根据模式选择不同的 API
   if (activeModel.params.mode === 'async') {

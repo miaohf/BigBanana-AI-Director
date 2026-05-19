@@ -16,10 +16,12 @@ import {
   AudioModelParams,
   DEFAULT_CHAT_PARAMS,
   DEFAULT_IMAGE_PARAMS,
+  DEFAULT_IMAGE_PARAMS_COMFYUI,
   DEFAULT_IMAGE_PARAMS_OPENAI,
   DEFAULT_VIDEO_PARAMS_SORA,
   DEFAULT_VIDEO_PARAMS_VEO,
   DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE,
+  DEFAULT_VIDEO_PARAMS_COMFYUI,
   DEFAULT_AUDIO_PARAMS,
 } from '../../types/model';
 import { getProviders, addProvider } from '../../services/modelRegistry';
@@ -41,7 +43,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
   const [endpoint, setEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [imageApiFormat, setImageApiFormat] = useState<ImageApiFormat>('gemini');
-  const [videoMode, setVideoMode] = useState<'sync' | 'async' | 'task'>('sync');
+  const [workflowName, setWorkflowName] = useState('');
+  const [videoMode, setVideoMode] = useState<'sync' | 'async' | 'task' | 'comfyui'>('sync');
   const [audioVoice, setAudioVoice] = useState<string>(DEFAULT_AUDIO_PARAMS.defaultVoice);
   const [audioOutputFormat, setAudioOutputFormat] = useState<AudioOutputFormat>(DEFAULT_AUDIO_PARAMS.outputFormat);
   
@@ -63,7 +66,11 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
   }, [type, videoMode, providerMode]);
 
   const handleSave = () => {
-    if (!name.trim() || !apiModel.trim()) {
+    const resolvedApiModel = (type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
+      ? (apiModel.trim() || workflowName.trim())
+      : apiModel.trim();
+
+    if (!name.trim() || !resolvedApiModel) {
       showAlert('请填写模型名称和 API 模型名', { type: 'warning' });
       return;
     }
@@ -95,27 +102,49 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       params = { ...DEFAULT_CHAT_PARAMS };
       if (!resolvedEndpoint) resolvedEndpoint = '/v1/chat/completions';
     } else if (type === 'image') {
+      if (imageApiFormat === 'comfyui' && !workflowName.trim() && !resolvedApiModel) {
+        showAlert('请填写 ComfyUI 工作流名称', { type: 'warning' });
+        return;
+      }
       params =
         imageApiFormat === 'openai'
           ? { ...DEFAULT_IMAGE_PARAMS_OPENAI }
-          : { ...DEFAULT_IMAGE_PARAMS };
+          : imageApiFormat === 'comfyui'
+            ? {
+                ...DEFAULT_IMAGE_PARAMS_COMFYUI,
+                workflowName: workflowName.trim() || resolvedApiModel,
+              }
+            : { ...DEFAULT_IMAGE_PARAMS };
       if (!resolvedEndpoint) {
         resolvedEndpoint =
-          imageApiFormat === 'openai'
+          imageApiFormat === 'comfyui'
+            ? ''
+            : imageApiFormat === 'openai'
             ? '/v1/images/generations'
             : '/v1beta/models/{model}:generateContent';
       }
     } else if (type === 'video') {
+      if (videoMode === 'comfyui' && !workflowName.trim() && !resolvedApiModel) {
+        showAlert('请填写 ComfyUI 工作流名称', { type: 'warning' });
+        return;
+      }
       params =
         videoMode === 'sync'
           ? { ...DEFAULT_VIDEO_PARAMS_VEO }
           : videoMode === 'task'
             ? { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE }
-            : { ...DEFAULT_VIDEO_PARAMS_SORA };
+            : videoMode === 'comfyui'
+              ? {
+                  ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+                  workflowName: workflowName.trim() || resolvedApiModel,
+                }
+              : { ...DEFAULT_VIDEO_PARAMS_SORA };
 
       if (!resolvedEndpoint) {
         resolvedEndpoint =
-          videoMode === 'sync'
+          videoMode === 'comfyui'
+            ? ''
+            : videoMode === 'sync'
             ? '/v1/chat/completions'
             : videoMode === 'task'
               ? '/api/v3/contents/generations/tasks'
@@ -134,7 +163,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
 
     const model: Omit<ModelDefinition, 'id' | 'isBuiltIn'> = {
       name: name.trim(),
-      apiModel: apiModel.trim(),
+      apiModel: resolvedApiModel,
       type,
       providerId,
       endpoint: resolvedEndpoint,
@@ -164,16 +193,20 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
           />
         </div>
         <div>
-          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">API 模型名 *（可与内置重复）</label>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
+            {(type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui') ? '模型标识 *' : 'API 模型名 *（可与内置重复）'}
+          </label>
           <input
             type="text"
             value={apiModel}
             onChange={(e) => setApiModel(e.target.value)}
-            placeholder="如：gpt-4-turbo、claude-3-opus"
+            placeholder={(type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui') ? '如：comfy-video' : '如：gpt-4-turbo、claude-3-opus'}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            该字段会作为 API 请求中的 model 参数；内部 ID 会自动生成
+            {(type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
+              ? '用于显示和自动生成内部 ID；工作流名称可单独配置'
+              : '该字段会作为 API 请求中的 model 参数；内部 ID 会自动生成'}
           </p>
         </div>
       </div>
@@ -214,9 +247,35 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             >
               OpenAI Images（支持参考图）
             </button>
+            <button
+              onClick={() => setImageApiFormat('comfyui')}
+              className={`flex-1 py-2 text-xs rounded transition-colors ${
+                imageApiFormat === 'comfyui'
+                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+              }`}
+            >
+              ComfyUI Workflow（本地）
+            </button>
           </div>
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            OpenAI 协议下无参考图走 `/v1/images/generations`，带参考图会自动走 `/v1/images/edits`。
+            ComfyUI 协议会读取 `/workflows/&lt;工作流名称&gt;.json`，并提交到提供商 Base URL 的 `/prompt`。
+          </p>
+        </div>
+      )}
+
+      {type === 'image' && imageApiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">ComfyUI 工作流名称 *</label>
+          <input
+            type="text"
+            value={workflowName}
+            onChange={(e) => setWorkflowName(e.target.value)}
+            placeholder="如：flux-dev-fp8"
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            对应 `public/workflows/flux-dev-fp8.json`；也可以填 `/workflows/xxx.json` 或完整 URL。
           </p>
         </div>
       )}
@@ -259,17 +318,21 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             type === 'chat'
               ? '/v1/chat/completions'
               : type === 'image'
-                ? imageApiFormat === 'openai'
+                ? imageApiFormat === 'comfyui'
+                  ? 'ComfyUI 可留空'
+                  : imageApiFormat === 'openai'
                   ? '/v1/images/generations'
                   : '/v1beta/models/{model}:generateContent'
                 : type === 'video'
-                  ? '/v1/videos 或 /api/v3/contents/generations/tasks'
+                  ? videoMode === 'comfyui'
+                    ? 'ComfyUI 可留空'
+                    : '/v1/videos 或 /api/v3/contents/generations/tasks'
                   : '/v1/chat/completions'
           }
           className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
         />
         <p className="text-[9px] text-[var(--text-muted)] mt-1">
-          留空则使用默认端点
+          留空则使用默认端点；也可以填写完整 URL，例如 http://127.0.0.1:9880/v1/audio/speech
         </p>
       </div>
 
@@ -349,16 +412,20 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               />
             </div>
             <div>
-              <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">提供商 API Key *</label>
+              <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
+                提供商 API Key {((type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')) ? '（可选）' : '*'}
+              </label>
               <input
                 type="password"
                 value={customProviderApiKey}
                 onChange={(e) => setCustomProviderApiKey(e.target.value)}
-                placeholder="输入此提供商的 API Key"
+                placeholder={((type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')) ? 'ComfyUI 本地服务可留空' : '输入此提供商的 API Key'}
                 className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
               />
               <p className="text-[9px] text-[var(--text-muted)] mt-1">
-                此 API Key 会用于该提供商下的所有模型
+                {((type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui'))
+                  ? 'ComfyUI 本地工作流不需要 API Key'
+                  : '此 API Key 会用于该提供商下的所有模型'}
               </p>
             </div>
           </div>
@@ -400,9 +467,35 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             >
               异步模式（火山任务类）
             </button>
+            <button
+              onClick={() => setVideoMode('comfyui')}
+              className={`flex-1 py-2 text-xs rounded transition-colors ${
+                videoMode === 'comfyui'
+                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+              }`}
+            >
+              ComfyUI Workflow（本地）
+            </button>
           </div>
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            同步模式：直接返回结果；Sora 类异步：`/v1/videos`；火山任务类：`/api/v3/contents/generations/tasks`
+            同步模式：直接返回结果；Sora 类异步：`/v1/videos`；火山任务类：`/api/v3/contents/generations/tasks`；ComfyUI 会提交本地 workflow。
+          </p>
+        </div>
+      )}
+
+      {type === 'video' && videoMode === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">ComfyUI 工作流名称 *</label>
+          <input
+            type="text"
+            value={workflowName}
+            onChange={(e) => setWorkflowName(e.target.value)}
+            placeholder="如：wan-i2v 或 video-workflow"
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            对应 `public/workflows/&lt;工作流名称&gt;.json`；也可以填 `/workflows/xxx.json` 或完整 URL。
           </p>
         </div>
       )}

@@ -94,8 +94,40 @@ const ModelCard: React.FC<ModelCardProps> = ({
   const renderImageParams = (params: ImageModelParams) => (
     <div className="space-y-3">
       <div className="text-[10px] text-[var(--text-muted)]">
-        协议：{params.apiFormat === 'openai' ? 'OpenAI Images' : 'Gemini GenerateContent'}
+        协议：{
+          params.apiFormat === 'openai'
+            ? 'OpenAI Images'
+            : params.apiFormat === 'comfyui'
+              ? 'ComfyUI Workflow'
+              : 'Gemini GenerateContent'
+        }
       </div>
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">工作流名称</label>
+          <input
+            type="text"
+            value={editParams.workflowName || ''}
+            onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+            placeholder="flux-dev-fp8"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">默认读取 public/workflows/&lt;名称&gt;.json</p>
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps</label>
+          <input
+            type="number"
+            min="1"
+            max="100"
+            value={editParams.steps || 20}
+            onChange={(e) => handleParamChange('steps', parseInt(e.target.value) || 20)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+          />
+        </div>
+      )}
       <div>
         <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">默认比例</label>
         <div className="flex gap-2">
@@ -120,6 +152,32 @@ const ModelCard: React.FC<ModelCardProps> = ({
 
   const renderVideoParams = (params: VideoModelParams) => (
     <div className="space-y-4">
+      {editParams.mode === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">工作流名称</label>
+          <input
+            type="text"
+            value={editParams.workflowName || ''}
+            onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+            placeholder="video-workflow"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">默认读取 public/workflows/&lt;名称&gt;.json</p>
+        </div>
+      )}
+      {editParams.mode === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps</label>
+          <input
+            type="number"
+            min="1"
+            max="100"
+            value={editParams.steps || 20}
+            onChange={(e) => handleParamChange('steps', parseInt(e.target.value) || 20)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+          />
+        </div>
+      )}
       <div>
         <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">默认比例</label>
         <div className="flex gap-2">
@@ -160,7 +218,9 @@ const ModelCard: React.FC<ModelCardProps> = ({
       )}
       <div className="text-[10px] text-[var(--text-muted)]">
         模式：{
-          editParams.mode === 'sync'
+          editParams.mode === 'comfyui'
+            ? 'ComfyUI Workflow'
+            : editParams.mode === 'sync'
             ? '同步（Chat Completion）'
             : (model.endpoint || '').includes('/contents/generations/tasks')
               ? '异步（火山任务）'

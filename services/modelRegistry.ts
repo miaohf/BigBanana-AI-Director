@@ -16,6 +16,7 @@ import {
   BUILTIN_PROVIDERS,
   ALL_BUILTIN_MODELS,
   DEFAULT_ACTIVE_MODELS,
+  DEFAULT_CHAT_PARAMS,
   AspectRatio,
   VideoDuration,
 } from '../types/model';
@@ -99,6 +100,10 @@ export const loadRegistry = (): ModelRegistryState => {
       const normalizedActiveChatModel = normalizeChatModelId(parsed.activeModels.chat);
       if (normalizedActiveChatModel && normalizedActiveChatModel !== parsed.activeModels.chat) {
         parsed.activeModels.chat = normalizedActiveChatModel;
+        chatModelAliasMigrated = true;
+      }
+      if (parsed.activeModels.chat === 'gpt-5.2') {
+        parsed.activeModels.chat = DEFAULT_ACTIVE_MODELS.chat;
         chatModelAliasMigrated = true;
       }
       
@@ -324,6 +329,31 @@ export const getDefaultProvider = (): ModelProvider => {
 };
 
 /**
+ * 更新默认提供商的 API 基础 URL。
+ * 内置模型都绑定到默认提供商时，这相当于全局 API Base URL。
+ */
+export const setDefaultProviderBaseUrl = (baseUrl: string): void => {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+  const state = loadRegistry();
+  const defaultProviderId = getDefaultProvider().id;
+  const index = state.providers.findIndex(p => p.id === defaultProviderId);
+
+  if (index === -1) {
+    state.providers.unshift({
+      ...BUILTIN_PROVIDERS[0],
+      baseUrl: normalizedBaseUrl,
+    });
+  } else {
+    state.providers[index] = {
+      ...state.providers[index],
+      baseUrl: normalizedBaseUrl,
+    };
+  }
+
+  saveRegistry(state);
+};
+
+/**
  * 添加提供商
  */
 export const addProvider = (provider: Omit<ModelProvider, 'id' | 'isBuiltIn'>): ModelProvider => {
@@ -519,6 +549,40 @@ export const setActiveModel = (type: ModelType, modelId: string): boolean => {
   state.activeModels[type] = modelId;
   saveRegistry(state);
   return true;
+};
+
+/**
+ * 按 API 模型名设置当前对话模型。
+ * 如果不存在对应模型，则在默认提供商下创建一个自定义对话模型。
+ */
+export const setActiveChatModelByName = (modelName: string): ModelDefinition | null => {
+  const normalizedModelName = normalizeChatModelId(modelName)?.trim();
+  if (!normalizedModelName) return null;
+
+  const existingModel = getModels('chat').find((model) => {
+    const apiModel = (model.apiModel || model.id).trim();
+    return model.id === normalizedModelName || apiModel === normalizedModelName;
+  });
+
+  if (existingModel) {
+    setActiveModel('chat', existingModel.id);
+    return existingModel;
+  }
+
+  const provider = getDefaultProvider();
+  const customModel = registerModel({
+    name: normalizedModelName,
+    apiModel: normalizedModelName,
+    type: 'chat',
+    providerId: provider.id,
+    endpoint: '/v1/chat/completions',
+    description: '全局配置中自动添加的对话模型',
+    isEnabled: true,
+    params: { ...DEFAULT_CHAT_PARAMS },
+  } as Omit<ModelDefinition, 'id' | 'isBuiltIn'>);
+
+  setActiveModel('chat', customModel.id);
+  return customModel;
 };
 
 /**
@@ -743,9 +807,10 @@ export const getDefaultVideoDuration = (): VideoDuration => {
 /**
  * 获取视频模型类型
  */
-export const getVideoModelType = (): 'sora' | 'veo' => {
+export const getVideoModelType = (): 'sora' | 'veo' | 'comfyui' => {
   const videoModel = getActiveVideoModel();
   if (videoModel) {
+    if (videoModel.params.mode === 'comfyui') return 'comfyui';
     return videoModel.params.mode === 'async' ? 'sora' : 'veo';
   }
   return 'sora';

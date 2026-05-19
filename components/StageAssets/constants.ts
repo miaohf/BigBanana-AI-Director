@@ -44,7 +44,7 @@ export const DEFAULTS = {
   language: '中文',
   visualStyle: 'live-action',
   genre: 'Cinematic',
-  modelVersion: 'gpt-5.2',
+  modelVersion: 'gpt-5.4',
   batchGenerateDelay: 3000, // 批量生成延迟（毫秒）
 };
 

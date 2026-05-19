@@ -18,6 +18,7 @@ import {
   setActiveModel,
   getProviderById,
 } from '../../services/modelRegistry';
+import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../../services/urlUtils';
 import { useAlert } from '../GlobalAlert';
 import ModelCard from './ModelCard';
 import AddModelForm from './AddModelForm';
@@ -32,6 +33,19 @@ const typeDescriptions: Record<ModelType, string> = {
   image: '用于角色定妆、场景生成、关键帧生成等图片生成任务',
   video: '用于视频片段生成任务',
   audio: '用于镜头旁白/对话配音，输出可直接预览的音频片段',
+};
+
+const getModelDisplayUrl = (model: ModelDefinition, providerBaseUrl: string): string => {
+  const params = model.params as any;
+  const usesComfyUi =
+    (model.type === 'image' && params?.apiFormat === 'comfyui') ||
+    (model.type === 'video' && params?.mode === 'comfyui');
+
+  if (usesComfyUi) {
+    return resolveComfyApiBaseUrl(providerBaseUrl, model.endpoint);
+  }
+
+  return resolveEndpointUrl(providerBaseUrl, model.endpoint || '');
 };
 
 const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
@@ -120,12 +134,13 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
         {(() => {
           const activeModel = models.find(m => m.id === activeModelId);
           const provider = activeModel ? getProviderById(activeModel.providerId) : null;
+          const displayUrl = activeModel && provider ? getModelDisplayUrl(activeModel, provider.baseUrl) : '';
           return (
             <p className="text-[11px] text-[var(--text-secondary)]">
               <span className="font-medium">{activeModel?.name || '未选择'}</span>
               {provider && (
                 <span className="text-[var(--text-tertiary)] ml-2">
-                  → {provider.name} ({provider.baseUrl})
+                  → {provider.name} ({displayUrl || provider.baseUrl})
                 </span>
               )}
             </p>

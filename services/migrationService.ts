@@ -1,9 +1,14 @@
 import { SeriesProject, Series, Episode, Character } from '../types';
-import { normalizeChatModelId } from './modelIdUtils';
+import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from './modelIdUtils';
 
 const generateId = (prefix: string): string => {
   const rand = Math.random().toString(36).slice(2, 6);
   return `${prefix}_${Date.now().toString(36)}_${rand}`;
+};
+
+const normalizeStoredChatModel = (modelId?: string): string => {
+  const normalized = normalizeChatModelId(modelId);
+  return !normalized || normalized === 'gpt-5.2' ? DEFAULT_CHAT_VERIFY_MODEL : normalized;
 };
 
 interface LegacyProjectState {
@@ -149,7 +154,7 @@ export async function runV2ToV3Migration(db: IDBDatabase): Promise<void> {
         targetDuration: legacy.targetDuration,
         language: legacy.language,
         visualStyle: legacy.visualStyle,
-        shotGenerationModel: normalizeChatModelId(legacy.shotGenerationModel) || 'gpt-5.2',
+        shotGenerationModel: normalizeStoredChatModel(legacy.shotGenerationModel),
         scriptData: legacy.scriptData ? { ...legacy.scriptData, characters: episodeChars, scenes: episodeScenes, props: episodeProps } : null,
         shots: legacy.shots || [],
         isParsingScript: false,

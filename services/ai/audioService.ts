@@ -12,7 +12,9 @@ import {
   resolveModel,
   resolveRequestModel,
   parseHttpError,
+  ApiKeyError,
 } from './apiCore';
+import { isAbsoluteHttpUrl, resolveEndpointUrl } from '../urlUtils';
 
 export type DubbingMode = 'narration' | 'dialogue';
 
@@ -85,13 +87,18 @@ const callSpeechEndpoint = async (
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const requestUrl = resolveEndpointUrl(apiBase, endpoint);
     const response = await retryOperation(async () => {
-      const res = await fetch(`${apiBase}${endpoint}`, {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
+      const res = await fetch(requestUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           model,
           voice,
@@ -158,7 +165,14 @@ export const generateDubbingAudio = async (
   const temperature = Number.isFinite(options.temperature) ? Number(options.temperature) : 0.6;
   const endpoint = resolvedAudioModel?.endpoint || '/v1/chat/completions';
 
-  const apiKey = checkApiKey('audio', requestedModel);
+  let apiKey = '';
+  try {
+    apiKey = checkApiKey('audio', requestedModel);
+  } catch (error) {
+    if (!(isAbsoluteHttpUrl(endpoint) && error instanceof ApiKeyError)) {
+      throw error;
+    }
+  }
   const apiBase = getApiBase('audio', requestedModel);
   const promptText = buildPromptText(rawText, mode, language);
 
@@ -187,13 +201,18 @@ export const generateDubbingAudio = async (
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const requestUrl = resolveEndpointUrl(apiBase, endpoint);
     const response = await retryOperation(async () => {
-      const res = await fetch(`${apiBase}${endpoint}`, {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
+      const res = await fetch(requestUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers,
         body: JSON.stringify({
           model: usedModel,
           modalities: ['text', 'audio'],

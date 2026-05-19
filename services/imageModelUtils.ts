@@ -7,11 +7,14 @@ export const getImageApiFormat = (
   model?: Partial<ImageModelDefinition> | null
 ): ImageApiFormat => {
   const explicitFormat = model?.params?.apiFormat;
-  if (explicitFormat === 'gemini' || explicitFormat === 'openai') {
+  if (explicitFormat === 'gemini' || explicitFormat === 'openai' || explicitFormat === 'comfyui') {
     return explicitFormat;
   }
 
   const endpoint = (model?.endpoint || '').toLowerCase();
+  if (endpoint.includes('/prompt') || endpoint.includes('/history')) {
+    return 'comfyui';
+  }
   if (endpoint.includes('/images/generations') || endpoint.includes('/images/edits')) {
     return 'openai';
   }
@@ -30,6 +33,9 @@ export const getDefaultImageEndpoint = (
 ): string => {
   if (apiFormat === 'openai') {
     return DEFAULT_OPENAI_IMAGE_ENDPOINT;
+  }
+  if (apiFormat === 'comfyui') {
+    return '';
   }
 
   return DEFAULT_GEMINI_IMAGE_ENDPOINT_TEMPLATE.replace('{model}', apiModel);

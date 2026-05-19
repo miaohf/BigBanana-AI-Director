@@ -1,4 +1,4 @@
-export const DEFAULT_CHAT_VERIFY_MODEL = 'gpt-5.2';
+export const DEFAULT_CHAT_VERIFY_MODEL = 'gpt-5.4';
 
 const CHAT_MODEL_ID_ALIASES: Record<string, string> = {
   'gpt-41': 'gpt-5.4',

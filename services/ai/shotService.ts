@@ -14,6 +14,7 @@ import {
   retryOperation,
   chatCompletion,
   getActiveChatModel,
+  getActiveChatModelName,
   parseJsonWithRecovery,
 } from './apiCore';
 import { getStylePromptCN, getStylePrompt } from './promptConstants';
@@ -162,7 +163,7 @@ export const optimizeBothKeyframes = async (
   sceneInfo: { location: string; time: string; atmosphere: string },
   characterInfo: string[],
   visualStyle: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   promptTemplates?: PromptTemplateConfig
 ): Promise<{ startPrompt: string; endPrompt: string }> => {
   console.log('🎨 optimizeBothKeyframes 调用 - 同时优化起始帧和结束帧 - 使用模型:', model);
@@ -217,7 +218,7 @@ export const optimizeKeyframePrompt = async (
   sceneInfo: { location: string; time: string; atmosphere: string },
   characterInfo: string[],
   visualStyle: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   promptTemplates?: PromptTemplateConfig
 ): Promise<string> => {
   console.log(`🎨 optimizeKeyframePrompt 调用 - ${frameType === 'start' ? '起始帧' : '结束帧'} - 使用模型:`, model);
@@ -294,7 +295,7 @@ export const generateActionSuggestion = async (
   endFramePrompt: string,
   cameraMovement: string,
   userInstruction?: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   targetDurationSeconds: number = 8,
   promptTemplates?: PromptTemplateConfig
 ): Promise<string> => {
@@ -349,7 +350,7 @@ export const splitShotIntoSubShots = async (
   sceneInfo: { location: string; time: string; atmosphere: string },
   characterNames: string[],
   visualStyle: string,
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   promptTemplates?: PromptTemplateConfig
 ): Promise<{ subShots: any[] }> => {
   console.log('✂️ splitShotIntoSubShots 调用 - 使用模型:', model);
@@ -448,7 +449,7 @@ export const enhanceKeyframePrompt = async (
   visualStyle: string,
   cameraMovement: string,
   frameType: 'start' | 'end',
-  model: string = 'gpt-5.2',
+  model: string = getActiveChatModelName(),
   promptTemplates?: PromptTemplateConfig
 ): Promise<string> => {
   console.log(`🎨 enhanceKeyframePrompt 调用 - ${frameType === 'start' ? '起始帧' : '结束帧'} - 使用模型:`, model);
@@ -567,7 +568,7 @@ export const generateNineGridPanels = async (
   );
   console.log(`🎬 ${layout.label}分镜 - 开始AI拆分视角...`);
 
-  const resolvedModel = model || getActiveChatModel()?.id || 'gpt-5.2';
+  const resolvedModel = model || getActiveChatModel()?.apiModel || getActiveChatModel()?.id || getActiveChatModelName();
   const systemPrompt = renderPromptTemplate(
     splitSystemTemplate,
     {
@@ -658,7 +659,7 @@ export const translateNineGridPanels = async (
 ): Promise<Array<{ index: number; descriptionZh: string }>> => {
   if (!panels.length) return [];
   const expectedCount = panels.length;
-  const resolvedModel = model || getActiveChatModel()?.id || 'gpt-5.2';
+  const resolvedModel = model || getActiveChatModel()?.apiModel || getActiveChatModel()?.id || getActiveChatModelName();
 
   const templates = promptTemplates || resolvePromptTemplateConfig();
   const template = withTemplateFallback(
@@ -699,7 +700,7 @@ export const reviseNineGridPanelsByInstruction = async (
     throw new Error('改写要求不能为空');
   }
 
-  const resolvedModel = model || getActiveChatModel()?.id || 'gpt-5.2';
+  const resolvedModel = model || getActiveChatModel()?.apiModel || getActiveChatModel()?.id || getActiveChatModelName();
   const sceneLocation = context.sceneInfo?.location || '未指定';
   const sceneTime = context.sceneInfo?.time || '未指定';
   const sceneAtmosphere = context.sceneInfo?.atmosphere || '未指定';

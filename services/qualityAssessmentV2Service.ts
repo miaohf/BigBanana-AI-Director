@@ -7,6 +7,7 @@ import {
 } from './aiService';
 import { assessShotQuality } from './qualityAssessmentService';
 import { findSceneByIdCompat } from './storyboardIdUtils';
+import { DEFAULT_CHAT_VERIFY_MODEL } from './modelIdUtils';
 
 const QUALITY_SCHEMA_VERSION = 2;
 
@@ -257,9 +258,9 @@ export const assessShotQualityWithLLM = async (
   const activeChatModel = getActiveChatModel() as any;
   const model =
     options?.model ||
-    activeChatModel?.id ||
     activeChatModel?.apiModel ||
-    'gpt-5.2';
+    activeChatModel?.id ||
+    DEFAULT_CHAT_VERIFY_MODEL;
 
   try {
     const prompt = buildPrompt(shot, scriptData);

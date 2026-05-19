@@ -186,13 +186,7 @@ const Dashboard: React.FC<Props> = ({ onOpenProject, onShowOnboarding, onShowMod
           </div>
           <div className="flex flex-wrap items-center justify-end gap-3">
             <div className="flex flex-wrap items-center gap-3">
-              <button
-                onClick={() => setShowGroupQr(true)}
-                className="group flex items-center gap-2 px-4 py-3 border border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)] transition-colors"
-                title="加入交流群"
-              >
-                <span className="font-medium text-xs tracking-widest uppercase">交流群</span>
-              </button>
+
               {onShowOnboarding && (
                 <button 
                   onClick={onShowOnboarding}
