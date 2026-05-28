@@ -20,6 +20,7 @@ import {
   getActiveVideoModel,
   getActiveImageModel,
   getActiveAudioModel,
+  getConfiguredChatModelApiName,
 } from '../modelRegistry';
 import { fetchMediaWithCorsFallback } from '../mediaFetchService';
 import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from '../modelIdUtils';
@@ -78,11 +79,23 @@ export const resolveModel = (type: 'chat' | 'image' | 'video' | 'audio', modelId
     const compatModelId = type === 'chat' ? (normalizeChatModelId(modelId) || modelId) : modelId;
     // Keep alias compatibility for model registry lookup.
     const lookupId = normalizedModelId === 'veo_3_1-fast-4k' ? 'veo_3_1-fast' : compatModelId;
-    const model = getModelById(lookupId);
+    const typedModels = getModels(type);
+    const model =
+      getModelById(lookupId) ||
+      typedModels.find(m => m.id.toLowerCase() === lookupId.toLowerCase());
     if (model && model.type === type) return model;
 
-    const candidates = getModels(type).filter(m => m.apiModel === lookupId);
+    const candidates = typedModels.filter(m => {
+      const apiModel = (m.apiModel || '').trim();
+      return apiModel === lookupId || apiModel.toLowerCase() === normalizedModelId;
+    });
     if (candidates.length === 1) return candidates[0];
+    if (candidates.length > 1) {
+      const exactIdMatch = candidates.find(
+        (m) => m.id === lookupId || m.id === compatModelId
+      );
+      if (exactIdMatch) return exactIdMatch;
+    }
   }
 
   return getActiveModel(type);
@@ -153,10 +166,9 @@ export const getApiBase = (type: 'chat' | 'image' | 'video' | 'audio' = 'chat', 
 /** Get active chat model name for logging/default behavior */
 export const getActiveChatModelName = (): string => {
   try {
-    const model = getActiveChatModel();
-    return model?.apiModel || model?.id || DEFAULT_CHAT_VERIFY_MODEL;
+    return getConfiguredChatModelApiName();
   } catch {
-    return DEFAULT_CHAT_VERIFY_MODEL;
+    return '';
   }
 };
 
@@ -727,7 +739,7 @@ export const verifyApiKey = async (key: string): Promise<{ success: boolean; mes
         Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
-        model: DEFAULT_CHAT_VERIFY_MODEL,
+        model: getConfiguredChatModelApiName(),
         messages: [{ role: 'user', content: 'Return 1 only.' }],
         temperature: 0.1,
         max_tokens: 5,

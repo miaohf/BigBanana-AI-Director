@@ -77,6 +77,8 @@ export interface VideoModelParams {
   supportedDurations: VideoDuration[];
   workflowName?: string;
   steps?: number;
+  supportsEndFrame?: boolean;             // 是否支持尾帧（首尾帧模式）
+  supportsAudio?: boolean;                // 是否支持注入配音音频
 }
 
 /**
@@ -105,7 +107,8 @@ export interface ModelDefinitionBase {
   name: string;                  // 显示名称，如 'GPT-5.1'
   type: ModelType;               // 模型类型
   providerId: string;            // 提供商 ID
-  endpoint?: string;             // API 端点（可覆盖默认）
+  baseUrl?: string;              // 模型专属 API 根地址（优先于提供商默认地址）
+  endpoint?: string;             // API 路径端点（如 /v1/chat/completions）
   description?: string;          // 描述
   isBuiltIn: boolean;            // 是否内置（内置模型不可删除）
   isEnabled: boolean;            // 是否启用
@@ -191,6 +194,8 @@ export interface ModelRegistryState {
   models: ModelDefinition[];
   activeModels: ActiveModels;
   globalApiKey?: string;
+  /** 全局配置中用于 API Key 验证的模型名，与 activeModels.chat 无关 */
+  globalVerifyChatModelName?: string;
 }
 
 // ============================================
@@ -216,6 +221,14 @@ export interface ImageGenerateOptions {
   prompt: string;
   referenceImages?: string[];
   aspectRatio?: AspectRatio;
+  /** 连贯性参考图（如首帧），ComfyUI img2img 时优先作为底图 */
+  continuityReferenceImage?: string;
+  /** 角色参考图，ComfyUI 首帧 img2img 时用于锁定面部/服装 */
+  characterReferenceImage?: string;
+  /** ComfyUI img2img 去噪强度，越低越贴近参考图 */
+  img2imgDenoise?: number;
+  /** 可选固定 seed，便于同一镜头多次生成保持风格接近 */
+  seed?: number;
 }
 
 /**
@@ -225,6 +238,7 @@ export interface VideoGenerateOptions {
   prompt: string;
   startImage?: string;
   endImage?: string;
+  audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
 }
@@ -393,6 +407,16 @@ export const BUILTIN_CHAT_MODELS: ChatModelDefinition[] = [
     params: { ...DEFAULT_CHAT_PARAMS },
   },
   {
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    type: 'chat',
+    providerId: 'antsk',
+    description: '新一代旗舰模型：推理与生成能力更强，适合高质量剧本与分镜生成',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: { ...DEFAULT_CHAT_PARAMS },
+  },
+  {
     id: 'claude-sonnet-4-6',
     name: 'Claude Sonnet 4.6',
     type: 'chat',
@@ -484,6 +508,17 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     isEnabled: true,
     params: { ...DEFAULT_IMAGE_PARAMS_OPENAI },
   },
+  {
+    id: 'comfyui-flux-dev-fp8',
+    apiModel: 'flux-dev-fp8',
+    name: 'ComfyUI Flux Dev (本地)',
+    type: 'image',
+    providerId: 'comfyui-local',
+    description: '本地 ComfyUI：首帧/尾帧通过 flux-dev-fp8-img2img 使用角色参考图与首尾连贯；纯文生图无法保证跨镜头角色一致。进阶可换 IP-Adapter Flux 工作流。',
+    isBuiltIn: true,
+    isEnabled: false,
+    params: { ...DEFAULT_IMAGE_PARAMS_COMFYUI, workflowName: 'flux-dev-fp8' },
+  },
 ];
 
 /**
@@ -548,6 +583,46 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: true,
     params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_2_0 },
   },
+  {
+    id: 'comfyui-ltx2-3-i2v',
+    apiModel: 'video_ltx2_3_i2v',
+    name: 'ComfyUI LTX 2.3 I2V (本地)',
+    type: 'video',
+    providerId: 'comfyui-local',
+    description: '本地 ComfyUI LTX 2.3 单图生视频（仅首帧，无音频）；工作流默认 25fps',
+    isBuiltIn: true,
+    isEnabled: false,
+    params: {
+      ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+      workflowName: 'video_ltx2_3_i2v',
+      defaultDuration: 5,
+      supportedDurations: [5, 10, 15],
+      supportedAspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      supportsEndFrame: false,
+      supportsAudio: false,
+    },
+  },
+  {
+    id: 'comfyui-ltx2-3-ia2v-flf2v',
+    apiModel: 'video_ltx2_3_ia2v_flf2v',
+    name: 'ComfyUI LTX 2.3 IA2V+首尾帧 (本地)',
+    type: 'video',
+    providerId: 'comfyui-local',
+    description: '本地 ComfyUI LTX 2.3 图生视频+音频：支持首帧/尾帧与镜头配音；默认 24fps，时长按秒注入',
+    isBuiltIn: true,
+    isEnabled: false,
+    params: {
+      ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+      workflowName: 'video_ltx2_3_ia2v_flf2v',
+      defaultDuration: 5,
+      supportedDurations: [5, 10, 15],
+      supportedAspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      supportsEndFrame: true,
+      supportsAudio: true,
+    },
+  },
 ];
 
 /**
@@ -595,6 +670,13 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     id: 'volcengine',
     name: 'Volcengine Ark',
     baseUrl: 'https://ark.cn-beijing.volces.com',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
+    id: 'comfyui-local',
+    name: 'ComfyUI (本地)',
+    baseUrl: 'http://127.0.0.1:8188',
     isBuiltIn: true,
     isDefault: false,
   },

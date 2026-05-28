@@ -21,6 +21,13 @@ import {
   VideoDuration,
 } from '../types/model';
 import { normalizeChatModelId } from './modelIdUtils';
+import {
+  isValidCloudApiBaseUrl,
+  isAbsoluteHttpUrl,
+  normalizeBaseUrl as normalizeHttpBaseUrl,
+  resolveComfyApiBaseUrl,
+  validateRemoteApiBaseUrl,
+} from './urlUtils';
 
 // localStorage 键名
 const STORAGE_KEY = 'bigbanana_model_registry';
@@ -119,13 +126,23 @@ export const loadRegistry = (): ModelRegistryState => {
         }
       });
 
-      // 按 baseUrl 去重提供商（保留先出现的项，通常为内置）
-      const seenBaseUrls = new Set<string>();
+      // 按 baseUrl 去重自定义提供商（内置提供商始终保留）
+      const builtInProviderIdSet = new Set(BUILTIN_PROVIDERS.map(p => p.id));
+      const seenCustomBaseUrls = new Set<string>();
       parsed.providers = parsed.providers.filter(p => {
+        if (builtInProviderIdSet.has(p.id)) return true;
         const key = normalizeBaseUrl(p.baseUrl);
-        if (seenBaseUrls.has(key)) return false;
-        seenBaseUrls.add(key);
+        if (seenCustomBaseUrls.has(key)) return false;
+        seenCustomBaseUrls.add(key);
         return true;
+      });
+
+      // 修复被误设为 ComfyUI/前端地址/空值的默认云端提供商
+      parsed.providers = parsed.providers.map(p => {
+        if (p.id !== 'antsk' && p.id !== 'volcengine') return p;
+        if (isValidCloudApiBaseUrl(p.baseUrl)) return p;
+        const builtin = BUILTIN_PROVIDERS.find(bp => bp.id === p.id);
+        return builtin ? { ...p, baseUrl: builtin.baseUrl } : p;
       });
       
       // 合并内置模型，并确保内置模型的参数与代码保持同步
@@ -157,13 +174,22 @@ export const loadRegistry = (): ModelRegistryState => {
               }
             }
           }
-          parsed.models[existingIndex] = {
+          const mergedModel = {
             ...bm,
             isEnabled: existing.isEnabled,
-            // Keep user-configured model-level API key for built-in models.
             apiKey: existing.apiKey?.trim() || undefined,
+            baseUrl: existing.baseUrl?.trim() || undefined,
             params: mergedParams as any,
-          };
+          } as ModelDefinition;
+          if (
+            isComfyUiModel({ ...mergedModel, endpoint: existing.endpoint }) &&
+            !mergedModel.baseUrl &&
+            existing.endpoint &&
+            isAbsoluteHttpUrl(existing.endpoint)
+          ) {
+            mergedModel.baseUrl = normalizeHttpBaseUrl(existing.endpoint);
+          }
+          parsed.models[existingIndex] = mergedModel;
         }
       });
 
@@ -190,6 +216,20 @@ export const loadRegistry = (): ModelRegistryState => {
           return { ...m, apiModel: m.id.slice(m.providerId.length + 1) };
         }
         return { ...m, apiModel: m.id };
+      });
+
+      // 迁移：endpoint 中的绝对 URL 统一写入 baseUrl
+      parsed.models = parsed.models.map((model) => {
+        if (model.baseUrl?.trim()) return model;
+        const endpoint = String(model.endpoint || '').trim();
+        if (endpoint && isAbsoluteHttpUrl(endpoint)) {
+          return {
+            ...model,
+            baseUrl: normalizeHttpBaseUrl(endpoint),
+            endpoint: undefined,
+          };
+        }
+        return model;
       });
 
       // 清理旧的已废弃视频模型
@@ -252,11 +292,32 @@ export const loadRegistry = (): ModelRegistryState => {
       
       // 同步全局 API Key
       parsed.globalApiKey = localStorage.getItem(API_KEY_STORAGE_KEY) || parsed.globalApiKey;
+
+      // 旧版将验证模型名与 activeModels.chat 共用，拆分为独立字段后做一次回填
+      let globalVerifyModelMigrated = false;
+      if (!parsed.globalVerifyChatModelName?.trim() && parsed.globalApiKey?.trim()) {
+        const legacyActiveChat = parsed.models.find(
+          (m) => m.type === 'chat' && m.id === parsed.activeModels.chat
+        );
+        if (legacyActiveChat) {
+          const legacyName = (legacyActiveChat.apiModel || legacyActiveChat.id).trim();
+          if (legacyName) {
+            parsed.globalVerifyChatModelName = legacyName;
+            globalVerifyModelMigrated = true;
+          }
+        }
+      }
       
       registryState = parsed;
 
       // 如果发生了迁移，立即回写 localStorage，避免每次加载都重复执行
-      if (modelsRemoved > 0 || activeModelMigrated || modelsReordered || chatModelAliasMigrated) {
+      if (
+        modelsRemoved > 0
+        || activeModelMigrated
+        || modelsReordered
+        || chatModelAliasMigrated
+        || globalVerifyModelMigrated
+      ) {
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
           console.log(`🔄 模型注册中心迁移完成：清理 ${modelsRemoved} 个废弃模型`);
@@ -332,8 +393,13 @@ export const getDefaultProvider = (): ModelProvider => {
  * 更新默认提供商的 API 基础 URL。
  * 内置模型都绑定到默认提供商时，这相当于全局 API Base URL。
  */
-export const setDefaultProviderBaseUrl = (baseUrl: string): void => {
+export const setDefaultProviderBaseUrl = (baseUrl: string): boolean => {
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+  if (validateRemoteApiBaseUrl(normalizedBaseUrl)) {
+    console.warn('[ModelRegistry] Refused to set invalid API base URL:', normalizedBaseUrl);
+    return false;
+  }
+
   const state = loadRegistry();
   const defaultProviderId = getDefaultProvider().id;
   const index = state.providers.findIndex(p => p.id === defaultProviderId);
@@ -351,6 +417,7 @@ export const setDefaultProviderBaseUrl = (baseUrl: string): void => {
   }
 
   saveRegistry(state);
+  return true;
 };
 
 /**
@@ -640,6 +707,9 @@ export const updateModel = (id: string, updates: Partial<ModelDefinition>): bool
     if (updates.apiKey !== undefined) {
       allowedUpdates.apiKey = updates.apiKey?.trim() || undefined;
     }
+    if (updates.baseUrl !== undefined) {
+      allowedUpdates.baseUrl = updates.baseUrl?.trim() || undefined;
+    }
     state.models[index] = { ...state.models[index], ...allowedUpdates } as ModelDefinition;
   } else {
     state.models[index] = { ...state.models[index], ...updates } as ModelDefinition;
@@ -701,6 +771,24 @@ export const setGlobalApiKey = (apiKey: string): void => {
 };
 
 /**
+ * 获取全局配置中用于 API 验证的对话模型名（不影响激活的对话模型）
+ */
+export const getGlobalVerifyChatModelName = (): string => {
+  const name = loadRegistry().globalVerifyChatModelName?.trim();
+  return name || '';
+};
+
+/**
+ * 设置全局配置中用于 API 验证的对话模型名
+ */
+export const setGlobalVerifyChatModelName = (modelName: string): void => {
+  const normalized = normalizeChatModelId(modelName)?.trim() || '';
+  const state = loadRegistry();
+  state.globalVerifyChatModelName = normalized || undefined;
+  saveRegistry(state);
+};
+
+/**
  * 获取模型对应的 API Key
  * 优先级：模型专属 Key > 提供商 Key > 全局 Key
  */
@@ -723,21 +811,170 @@ export const getApiKeyForModel = (modelId: string): string | undefined => {
   return getGlobalApiKey();
 };
 
+const isComfyUiModel = (model: ModelDefinition): boolean => {
+  if (model.type === 'image') {
+    return (model.params as any)?.apiFormat === 'comfyui';
+  }
+  if (model.type === 'video') {
+    return isComfyUiVideoModel(model);
+  }
+  return false;
+};
+
+/** 判断是否为 ComfyUI 本地视频工作流模型 */
+export const isComfyUiVideoModel = (model?: ModelDefinition | null): boolean => {
+  if (!model || model.type !== 'video') return false;
+  return (model.params as any)?.mode === 'comfyui' || model.providerId === 'comfyui-local';
+};
+
+/**
+ * 解析模型实际使用的 API Base URL（模型级 baseUrl 优先于提供商默认地址）
+ */
+export const resolveModelApiBaseUrl = (model: ModelDefinition): string => {
+  const provider = getProviderById(model.providerId);
+  const builtinProvider = BUILTIN_PROVIDERS.find(p => p.id === model.providerId);
+  const providerBase = provider?.baseUrl || builtinProvider?.baseUrl || '';
+
+  const modelBase = model.baseUrl?.trim();
+  if (modelBase) {
+    if (isComfyUiModel(model)) {
+      return resolveComfyApiBaseUrl('', modelBase);
+    }
+    return normalizeHttpBaseUrl(modelBase).replace(/\/v1$/i, '');
+  }
+
+  if (isComfyUiModel(model)) {
+    return resolveComfyApiBaseUrl(providerBase, model.endpoint);
+  }
+
+  const endpoint = String(model.endpoint || '').trim();
+  if (endpoint && isAbsoluteHttpUrl(endpoint)) {
+    return normalizeHttpBaseUrl(endpoint).replace(/\/v1$/i, '');
+  }
+
+  if (providerBase && isValidCloudApiBaseUrl(providerBase)) {
+    return normalizeHttpBaseUrl(providerBase);
+  }
+
+  if (providerBase) {
+    return normalizeHttpBaseUrl(providerBase);
+  }
+
+  const globalDefaultBase = getDefaultProvider().baseUrl?.trim();
+  if (globalDefaultBase && !isComfyUiModel(model)) {
+    return normalizeHttpBaseUrl(globalDefaultBase).replace(/\/v1$/i, '');
+  }
+
+  return '';
+};
+
 /**
  * 获取模型对应的 API 基础 URL
  */
 export const getApiBaseUrlForModel = (modelId: string): string => {
   const model = getModelById(modelId);
-  if (!model) return BUILTIN_PROVIDERS[0].baseUrl.replace(/\/+$/, '');
-  
-  const provider = getProviderById(model.providerId);
-  const baseUrl = provider?.baseUrl || BUILTIN_PROVIDERS[0].baseUrl;
-  return baseUrl.replace(/\/+$/, '');
+  if (!model) {
+    return BUILTIN_PROVIDERS[0].baseUrl.replace(/\/+$/, '');
+  }
+
+  const resolved = resolveModelApiBaseUrl(model);
+  if (resolved) return resolved;
+
+  const fallback = BUILTIN_PROVIDERS.find(p => p.id === model.providerId)?.baseUrl
+    || BUILTIN_PROVIDERS[0].baseUrl;
+  return normalizeHttpBaseUrl(fallback);
 };
 
 // ============================================
 // 辅助函数
 // ============================================
+
+/**
+ * 模型配置页「当前使用」的对话模型 ID（activeModels.chat）
+ */
+export const getConfiguredChatModelId = (): string => {
+  const activeChatModel = getActiveChatModel();
+  if (activeChatModel?.isEnabled) {
+    return activeChatModel.id;
+  }
+
+  const enabledChatModels = getModels('chat').filter(m => m.isEnabled);
+  return enabledChatModels[0]?.id || '';
+};
+
+/**
+ * 将模型引用（内部 ID 或 API 模型名）解析为唯一的对话模型 ID。
+ * 多个条目共用同一 apiModel 时，仅当 ref 与某条目的 id 完全匹配才解析成功。
+ */
+export const resolveChatModelId = (ref?: string | null): string | null => {
+  const trimmed = ref?.trim();
+  if (!trimmed) return null;
+
+  const byId = getModelById(trimmed);
+  if (byId?.type === 'chat' && byId.isEnabled) {
+    return byId.id;
+  }
+
+  const normalized = normalizeChatModelId(trimmed) || trimmed;
+  const candidates = getModels('chat').filter((model) => {
+    if (!model.isEnabled) return false;
+    const apiModel = (model.apiModel || model.id).trim();
+    return (
+      model.id === trimmed
+      || model.id === normalized
+      || apiModel === trimmed
+      || apiModel === normalized
+      || apiModel.toLowerCase() === normalized.toLowerCase()
+    );
+  });
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0].id;
+
+  const exactIdMatch = candidates.find(
+    (model) => model.id === trimmed || model.id === normalized
+  );
+  return exactIdMatch?.id || null;
+};
+
+/**
+ * 获取指定对话模型的 API 请求名（body.model）
+ */
+export const getChatModelApiName = (modelId: string): string => {
+  const model = getModelById(modelId);
+  return model?.apiModel || model?.id || modelId;
+};
+
+/**
+ * 获取当前激活对话模型的 API 名称
+ */
+export const getConfiguredChatModelApiName = (): string => {
+  const modelId = getConfiguredChatModelId();
+  if (!modelId) return '';
+  return getChatModelApiName(modelId);
+};
+
+/**
+ * 解析项目/流程使用的对话模型 ID。
+ * 优先使用项目保存的 shotGenerationModel；无效时回退到模型配置页的激活项。
+ */
+export const resolveShotGenerationModel = (stored?: string | null): string => {
+  const resolved = resolveChatModelId(stored);
+  if (resolved) return resolved;
+  return getConfiguredChatModelId();
+};
+
+/**
+ * 解析项目保存的对话模型对应的 API 请求名
+ */
+export const getShotGenerationModelApiName = (stored?: string | null): string => {
+  const modelId = resolveShotGenerationModel(stored);
+  if (!modelId) return '';
+  return getChatModelApiName(modelId);
+};
+
+/** @deprecated 使用 getConfiguredChatModelId */
+export const getDefaultShotGenerationModelId = (): string => getConfiguredChatModelId();
 
 /**
  * 获取激活模型的完整配置
@@ -752,7 +989,14 @@ export const getActiveModelsConfig = (): ActiveModels => {
 export const isModelAvailable = (modelId: string): boolean => {
   const model = getModelById(modelId);
   if (!model || !model.isEnabled) return false;
-  
+
+  if (model.type === 'image' && (model.params as any)?.apiFormat === 'comfyui') {
+    return true;
+  }
+  if (model.type === 'video' && isComfyUiVideoModel(model)) {
+    return true;
+  }
+
   const apiKey = getApiKeyForModel(modelId);
   return !!apiKey;
 };
@@ -810,7 +1054,7 @@ export const getDefaultVideoDuration = (): VideoDuration => {
 export const getVideoModelType = (): 'sora' | 'veo' | 'comfyui' => {
   const videoModel = getActiveVideoModel();
   if (videoModel) {
-    if (videoModel.params.mode === 'comfyui') return 'comfyui';
+    if (isComfyUiVideoModel(videoModel)) return 'comfyui';
     return videoModel.params.mode === 'async' ? 'sora' : 'veo';
   }
   return 'sora';

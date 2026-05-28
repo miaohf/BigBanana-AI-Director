@@ -3,7 +3,7 @@
  * 显示单个模型的配置
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle } from 'lucide-react';
 import { 
   ModelDefinition, 
@@ -15,6 +15,7 @@ import {
   VideoDuration
 } from '../../types/model';
 import { getProviderById } from '../../services/modelRegistry';
+import { normalizeBaseUrl, resolveComfyApiBaseUrl, validateRemoteApiBaseUrl, isAbsoluteHttpUrl } from '../../services/urlUtils';
 
 interface ModelCardProps {
   model: ModelDefinition;
@@ -39,9 +40,90 @@ const ModelCard: React.FC<ModelCardProps> = ({
   const [editApiKey, setEditApiKey] = useState<string>(model.apiKey || '');
   const provider = getProviderById(model.providerId);
   const isVolcengineModel = model.providerId === 'volcengine';
+  const isComfyUiImage = model.type === 'image' && (model.params as ImageModelParams).apiFormat === 'comfyui';
+  const isComfyUiVideo = model.type === 'video' && (model.params as VideoModelParams).mode === 'comfyui';
+  const isComfyUiModel = isComfyUiImage || isComfyUiVideo;
   const modelHasApiKey = Boolean(model.apiKey?.trim());
   const providerHasApiKey = Boolean(provider?.apiKey?.trim());
   const isMissingVolcengineKey = isVolcengineModel && !modelHasApiKey && !providerHasApiKey;
+
+  const resolveModelBaseUrlDisplay = (): string => {
+    if (model.baseUrl?.trim()) {
+      return isComfyUiModel
+        ? resolveComfyApiBaseUrl('', model.baseUrl)
+        : normalizeBaseUrl(model.baseUrl);
+    }
+    if (isComfyUiModel) {
+      return resolveComfyApiBaseUrl(provider?.baseUrl || 'http://127.0.0.1:8188', model.endpoint);
+    }
+    if (model.endpoint && isAbsoluteHttpUrl(model.endpoint)) {
+      return normalizeBaseUrl(model.endpoint);
+    }
+    return '';
+  };
+
+  const [editBaseUrl, setEditBaseUrl] = useState(resolveModelBaseUrlDisplay);
+  const [baseUrlError, setBaseUrlError] = useState('');
+
+  useEffect(() => {
+    setEditParams(model.params);
+    setEditApiKey(model.apiKey || '');
+    setEditBaseUrl(resolveModelBaseUrlDisplay());
+    setBaseUrlError('');
+  }, [model.id, model.params, model.apiKey, model.baseUrl, model.endpoint, model.providerId, provider?.baseUrl]);
+
+  const handleBaseUrlChange = (value: string) => {
+    setEditBaseUrl(value);
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setBaseUrlError('');
+      onUpdate({ baseUrl: undefined });
+      return;
+    }
+
+    const normalized = isComfyUiModel
+      ? resolveComfyApiBaseUrl('', trimmed)
+      : normalizeBaseUrl(trimmed).replace(/\/v1$/i, '');
+
+    if (!isComfyUiModel) {
+      const validationError = validateRemoteApiBaseUrl(normalized);
+      if (validationError) {
+        setBaseUrlError(validationError);
+        return;
+      }
+    }
+
+    setBaseUrlError('');
+    const providerDefault = normalizeBaseUrl(provider?.baseUrl || '');
+    if (normalized === providerDefault) {
+      onUpdate({ baseUrl: undefined });
+      return;
+    }
+    onUpdate({ baseUrl: normalized });
+  };
+
+  const renderApiBaseUrlField = () => (
+    <div>
+      <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
+        {isComfyUiModel ? 'ComfyUI API 地址' : 'API Base URL'}
+      </label>
+      <input
+        type="text"
+        value={editBaseUrl}
+        onChange={(e) => handleBaseUrlChange(e.target.value)}
+        placeholder={isComfyUiModel ? 'http://127.0.0.1:8188' : 'http://192.168.1.197:3000'}
+        className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+      />
+      <p className="text-[9px] text-[var(--text-muted)] mt-1">
+        {isComfyUiModel
+          ? '本地 ComfyUI 服务地址，每个 ComfyUI 模型可单独配置。'
+          : '留空则使用全局默认 Base URL；填写后覆盖全局地址。'}
+      </p>
+      {baseUrlError && (
+        <p className="text-[9px] text-[var(--error-text)] mt-1">{baseUrlError}</p>
+      )}
+    </div>
+  );
 
   const handleParamChange = (key: string, value: any) => {
     const newParams = { ...editParams, [key]: value };
@@ -284,7 +366,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
             <p className="text-[10px] text-[var(--text-tertiary)] mt-0.5">
               API 模型名: {apiModelLabel}
               {model.id !== apiModelLabel && ` · 内部ID: ${model.id}`}
-              {model.endpoint && ` · ${model.endpoint}`}
+              {model.baseUrl && ` · ${model.baseUrl}`}
+              {!model.baseUrl && model.endpoint && !isAbsoluteHttpUrl(model.endpoint) && ` · ${model.endpoint}`}
               {model.description && ` · ${model.description}`}
             </p>
           </div>
@@ -357,11 +440,16 @@ const ModelCard: React.FC<ModelCardProps> = ({
             {/* 模型专属 API Key */}
             <div>
               <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
-                API Key（留空使用全局 Key）
+                API Key{isComfyUiModel ? '（ComfyUI 本地可留空）' : '（留空使用全局 Key）'}
               </label>
               {isVolcengineModel && (
                 <p className="text-[9px] text-[var(--warning-text)] mb-1">
                   火山模型不会使用全局 API Key，请填写模型 Key 或 Volcengine 提供商 Key。
+                </p>
+              )}
+              {isComfyUiModel && (
+                <p className="text-[9px] text-[var(--text-muted)] mb-1">
+                  本地 ComfyUI 不需要 API Key；请在下方配置 ComfyUI API 地址并确保服务已启动。
                 </p>
               )}
               <input
@@ -380,6 +468,27 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 <p className="text-[9px] text-[var(--success)] mt-1">✓ 已配置专属 Key</p>
               )}
             </div>
+
+            {renderApiBaseUrlField()}
+
+            {model.type === 'chat' && !model.isBuiltIn && (
+              <div>
+                <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">API 模型名</label>
+                <input
+                  type="text"
+                  value={model.apiModel || model.id}
+                  onChange={(e) => {
+                    const next = e.target.value.trim();
+                    onUpdate({ apiModel: next || model.id });
+                  }}
+                  placeholder="如 gpt-4-turbo、gemma4:31b"
+                  className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+                />
+                <p className="text-[9px] text-[var(--text-muted)] mt-1">
+                  每条对话模型可单独配置 API 模型名，互不影响；请求时以本字段为准。
+                </p>
+              </div>
+            )}
             
             {model.type === 'chat' && renderChatParams(model.params)}
             {model.type === 'image' && renderImageParams(model.params)}

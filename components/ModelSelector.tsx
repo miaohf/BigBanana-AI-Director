@@ -18,6 +18,7 @@ import {
   getImageModels,
   getVideoModels,
   getAudioModels,
+  getActiveChatModel,
 } from '../services/modelRegistry';
 
 interface ModelSelectorProps {
@@ -65,13 +66,21 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   };
 
   const models = getModels();
-  const selectedModel = models.find(m => m.id === value);
+  const resolvedValue = models.some(m => m.id === value)
+    ? value
+    : (
+      models.find(m => (m.apiModel || m.id) === value)?.id
+      || (value ? value : (type === 'chat' ? getActiveChatModel()?.id : undefined))
+      || models[0]?.id
+      || value
+    );
+  const selectedModel = models.find(m => m.id === resolvedValue);
 
   if (compact) {
     return (
       <div className="relative">
         <select
-          value={value}
+          value={resolvedValue}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className="appearance-none bg-[var(--bg-hover)] border border-[var(--border-secondary)] text-[var(--text-primary)] text-xs rounded px-3 py-1.5 pr-7 focus:border-[var(--accent)] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
@@ -97,7 +106,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       )}
       <div className="relative">
         <select
-          value={value}
+          value={resolvedValue}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className="w-full appearance-none bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2.5 pr-8 focus:border-[var(--accent)] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
@@ -139,7 +148,7 @@ export const VideoModelSelector: React.FC<{
       </label>
       <div className="relative">
         <select
-          value={value}
+          value={resolvedValue}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className="w-full appearance-none bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2.5 pr-8 focus:border-[var(--accent)] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
@@ -196,7 +205,7 @@ export const AudioModelSelector: React.FC<{
       </label>
       <div className="relative">
         <select
-          value={value}
+          value={resolvedValue}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className="w-full appearance-none bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2.5 pr-8 focus:border-[var(--accent)] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"

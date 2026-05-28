@@ -2,6 +2,7 @@ import path from 'path';
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createNewApiProxyHandler } from './server/newApiProxyCore.mjs';
+import { createComfyuiProxyHandler } from './server/comfyuiProxyCore.mjs';
 
 const createDevMediaProxyPlugin = (): Plugin => ({
   name: 'dev-media-proxy',
@@ -86,6 +87,14 @@ const createDevNewApiProxyPlugin = (): Plugin => ({
   },
 });
 
+const createDevComfyuiProxyPlugin = (): Plugin => ({
+  name: 'dev-comfyui-proxy',
+  configureServer(server) {
+    const handler = createComfyuiProxyHandler();
+    server.middlewares.use('/api/comfyui-proxy', handler as any);
+  },
+});
+
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
@@ -93,7 +102,7 @@ export default defineConfig(({ mode }) => {
         port: 3000,
         host: '0.0.0.0',
       },
-      plugins: [react(), createDevMediaProxyPlugin(), createDevNewApiProxyPlugin()],
+      plugins: [react(), createDevMediaProxyPlugin(), createDevNewApiProxyPlugin(), createDevComfyuiProxyPlugin()],
       define: {
         'process.env.API_KEY': JSON.stringify(env.ANTSK_API_KEY),
         'process.env.ANTSK_API_KEY': JSON.stringify(env.ANTSK_API_KEY)

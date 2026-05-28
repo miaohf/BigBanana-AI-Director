@@ -17,6 +17,7 @@ import {
   inferVisualStyleFromImage,
 } from '../../services/aiService';
 import { getFinalValue, validateConfig } from './utils';
+import { resolveShotGenerationModel } from '../../services/modelRegistry';
 import { DEFAULTS, SCRIPT_SOFT_LIMIT, SCRIPT_HARD_LIMIT } from './constants';
 import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
@@ -307,7 +308,9 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [localTitle, setLocalTitle] = useState(project.title);
   const [localDuration, setLocalDuration] = useState(project.targetDuration || DEFAULTS.duration);
   const [localLanguage, setLocalLanguage] = useState(project.language || DEFAULTS.language);
-  const [localModel, setLocalModel] = useState(project.shotGenerationModel || DEFAULTS.model);
+  const [localModel, setLocalModel] = useState(() =>
+    resolveShotGenerationModel(project.shotGenerationModel)
+  );
   const [localVisualStyle, setLocalVisualStyle] = useState(project.visualStyle || DEFAULTS.visualStyle);
   const [enableQualityCheck, setEnableQualityCheck] = useState(true);
   const [customDurationInput, setCustomDurationInput] = useState('');
@@ -350,7 +353,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setLocalTitle(project.title);
     setLocalDuration(project.targetDuration || DEFAULTS.duration);
     setLocalLanguage(project.language || DEFAULTS.language);
-    setLocalModel(project.shotGenerationModel || DEFAULTS.model);
+    setLocalModel(resolveShotGenerationModel(project.shotGenerationModel));
     setLocalVisualStyle(project.visualStyle || DEFAULTS.visualStyle);
     setEnableQualityCheck(true);
     setRewriteInstruction('');
@@ -388,7 +391,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     if (isProcessing || isContinuing || isRewriting) return;
 
     const draftDuration = getDraftValue(localDuration, customDurationInput, project.targetDuration || DEFAULTS.duration);
-    const draftModel = getDraftValue(localModel, customModelInput, project.shotGenerationModel || DEFAULTS.model);
+    const draftModel = getDraftValue(
+      localModel,
+      customModelInput,
+      resolveShotGenerationModel(project.shotGenerationModel)
+    );
     const draftVisualStyle = getDraftValue(localVisualStyle, customStyleInput, project.visualStyle || DEFAULTS.visualStyle);
 
     const draftUpdates = {
@@ -437,6 +444,17 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     updateProject
   ]);
 
+  const handleModelChange = (modelId: string) => {
+    if (!modelId) return;
+    setLocalModel(modelId);
+    updateProject({ shotGenerationModel: modelId });
+  };
+
+  const getConfiguredModelForRequest = (): string =>
+    resolveShotGenerationModel(
+      getDraftValue(localModel, customModelInput, project.shotGenerationModel)
+    );
+
   const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
@@ -448,7 +466,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     if (isInferringVisualStyle || isProcessing || isContinuing || isRewriting) {
       return;
     }
-    const finalModel = getFinalValue(localModel, customModelInput);
+    const finalModel = getConfiguredModelForRequest();
 
     if (!finalModel) {
       setError('Please choose or input a chat model first.');
@@ -491,7 +509,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
 
   const handleAnalyze = async () => {
     const finalDuration = getFinalValue(localDuration, customDurationInput);
-    const finalModel = getFinalValue(localModel, customModelInput);
+    const finalModel = getConfiguredModelForRequest();
     const finalVisualStyle = getFinalValue(localVisualStyle, customStyleInput);
 
     const validation = validateConfig({
@@ -816,7 +834,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   };
 
   const handleContinueScript = async () => {
-    const finalModel = getFinalValue(localModel, customModelInput);
+    const finalModel = getConfiguredModelForRequest();
     const baseScript = localScript;
     const separator = baseScript.trim() ? '\n\n' : '';
     const continueBudget = SCRIPT_HARD_LIMIT - baseScript.length - separator.length;
@@ -910,7 +928,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   };
 
   const handleRewriteScript = async () => {
-    const finalModel = getFinalValue(localModel, customModelInput);
+    const finalModel = getConfiguredModelForRequest();
     const baseScript = localScript;
     
     if (!baseScript.trim()) {
@@ -1005,7 +1023,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     : '';
 
   const handleRewriteSelection = async () => {
-    const finalModel = getFinalValue(localModel, customModelInput);
+    const finalModel = getConfiguredModelForRequest();
     const currentSelection = selectionRange;
     const trimmedInstruction = rewriteInstruction.trim();
 
@@ -1114,7 +1132,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     script: localScript,
     language: localLanguage,
     targetDuration: getDraftValue(localDuration, customDurationInput, project.targetDuration || DEFAULTS.duration),
-    model: getDraftValue(localModel, customModelInput, project.shotGenerationModel || DEFAULTS.model),
+    model: getDraftValue(
+      localModel,
+      customModelInput,
+      resolveShotGenerationModel(project.shotGenerationModel)
+    ),
     visualStyle: getDraftValue(localVisualStyle, customStyleInput, project.visualStyle || DEFAULTS.visualStyle),
     enableQualityCheck
   });
@@ -1448,7 +1470,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             onTitleChange={setLocalTitle}
             onDurationChange={setLocalDuration}
             onLanguageChange={setLocalLanguage}
-            onModelChange={setLocalModel}
+            onModelChange={handleModelChange}
             onVisualStyleChange={setLocalVisualStyle}
             onCustomDurationChange={setCustomDurationInput}
             onCustomModelChange={setCustomModelInput}

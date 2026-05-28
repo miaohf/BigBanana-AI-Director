@@ -15,6 +15,8 @@ import { generateImage, generateVideo, generateActionSuggestion, optimizeKeyfram
 import { 
   getRefImagesForShot, 
   getPropsInfoForShot,
+  buildShotScriptContext,
+  pickPrimaryCharacterReference,
   buildKeyframePrompt,
   buildKeyframePromptWithAI,
   buildVideoPrompt,
@@ -42,7 +44,7 @@ import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel } from '../../services/modelRegistry';
+import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel, getActiveVideoModel, resolveShotGenerationModel } from '../../services/modelRegistry';
 import { persistVideoReference } from '../../services/videoStorageService';
 import { runKeyframePreflight, runVideoPreflight, formatLintIssues } from '../../services/promptLintService';
 import { assessShotQuality, getProjectAverageQualityScore } from '../../services/qualityAssessmentService';
@@ -57,11 +59,6 @@ interface Props {
   onApiKeyError?: (error: any) => boolean;
   onGeneratingChange?: (isGenerating: boolean) => void;
 }
-
-const getDefaultShotGenerationModel = (): string => {
-  const activeChatModel = getActiveChatModel();
-  return activeChatModel?.apiModel || activeChatModel?.id || 'gpt-5.4';
-};
 
 const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
@@ -403,12 +400,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
     const startKf = shot.keyframes?.find(k => k.type === 'start');
     
+    const scriptContext = buildShotScriptContext(shot, project.scriptData, type);
     const rawBasePrompt = existingKf?.visualPrompt 
-      ? extractBasePrompt(existingKf.visualPrompt, shot.actionSummary)
-      : shot.actionSummary;
+      ? extractBasePrompt(existingKf.visualPrompt, scriptContext)
+      : scriptContext;
 
     const continuityHint = type === 'end' && startKf?.visualPrompt
-      ? `【连贯性约束】结束帧必须与起始帧保持同一角色身份、服装主体、场景锚点与光照逻辑，并在构图和动作结果上体现明确变化。起始帧参考：${extractBasePrompt(startKf.visualPrompt, shot.actionSummary).slice(0, 200)}`
+      ? `【连贯性约束】结束帧必须与起始帧保持同一角色身份、服装主体、场景锚点与光照逻辑，并在构图和动作结果上体现明确变化。起始帧参考：${extractBasePrompt(startKf.visualPrompt, buildShotScriptContext(shot, project.scriptData, 'start')).slice(0, 200)}`
       : '';
 
     const basePrompt = continuityHint && !rawBasePrompt.includes('【连贯性约束】')
@@ -513,6 +511,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return updateKeyframeInShot(s, type, generatingKeyframe);
     });
 
+    const characterReferenceImage =
+      type === 'start' ? pickPrimaryCharacterReference(shot, project.scriptData) : undefined;
+    if (type === 'start' && !characterReferenceImage && (shot.characters?.length || 0) > 0) {
+      setToastMessage('未找到角色参考图：请先在资产阶段为角色生成/上传参考图，否则跨镜头角色一致性会较差。');
+    }
+
     try {
       // 使用当前设置的横竖屏比例生成关键帧，传递 hasTurnaround 标记
       const url = await generateImage(
@@ -522,9 +526,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         false,
         refResult.hasTurnaround,
         negativePrompt,
-        continuityReferenceImage
-          ? { continuityReferenceImage, referencePackType: 'shot' }
-          : { referencePackType: 'shot' }
+        {
+          referencePackType: 'shot',
+          continuityReferenceImage,
+          characterReferenceImage,
+        }
       );
 
       updateShot(shot.id, (s) => {
@@ -599,7 +605,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const eKf = shot.keyframes?.find(k => k.type === 'end');
     
     // 使用传入的 modelId 或默认模型
-    const selectedModelInput: string = modelId || shot.videoModel || DEFAULTS.videoModel;
+    const selectedModelInput: string = modelId || getActiveVideoModel()?.id || shot.videoModel || DEFAULTS.videoModel;
     const selectedModelRouting = resolveVideoModelRouting(selectedModelInput);
     const selectedModel = selectedModelRouting.normalizedModelId;
     // 规范化模型名称：旧模型名 -> 现行可用模型
@@ -730,13 +736,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }));
     
     try {
+      const dubbingAudioUrl =
+        shot.dubbing?.status === 'completed' ? shot.dubbing.audioUrl : undefined;
       const videoUrl = await generateVideo(
         videoPrompt, 
         routedFrames.startImage,
         routedFrames.endImage,
         selectedModel,
         aspectRatio,
-        duration
+        duration,
+        dubbingAudioUrl
       );
       const persistedVideoUrl = await persistVideoReference(videoUrl, {
         projectId: project.projectId || project.id,
@@ -1260,7 +1269,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || getDefaultShotGenerationModel();
+    const shotGenerationModel = resolveShotGenerationModel(project.shotGenerationModel);
     
     // 3. 调用AI拆分
     setIsSplittingShot(true);
@@ -1329,7 +1338,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
-    const shotGenerationModel = project.shotGenerationModel || getDefaultShotGenerationModel();
+    const shotGenerationModel = resolveShotGenerationModel(project.shotGenerationModel);
     
     // 3. 显示弹窗并设置生成状态（仅生成面板描述）
     setShowNineGrid(true);
@@ -1538,7 +1547,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
    */
   const handleTranslateNineGridPanels = async () => {
     if (!activeShot?.nineGrid?.panels?.length) return;
-    const model = project.shotGenerationModel || getDefaultShotGenerationModel();
+    const model = resolveShotGenerationModel(project.shotGenerationModel);
     setIsNineGridTranslating(true);
     try {
       const translations = await translateNineGridPanels(activeShot.nineGrid.panels, model, promptTemplates);
@@ -1581,7 +1590,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return;
     }
 
-    const model = project.shotGenerationModel || getDefaultShotGenerationModel();
+    const model = resolveShotGenerationModel(project.shotGenerationModel);
     const scene = project.scriptData?.scenes.find(s => String(s.id) === String(activeShot.sceneId));
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
 

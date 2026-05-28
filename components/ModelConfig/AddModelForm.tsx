@@ -25,6 +25,7 @@ import {
   DEFAULT_AUDIO_PARAMS,
 } from '../../types/model';
 import { getProviders, addProvider } from '../../services/modelRegistry';
+import { resolveComfyApiBaseUrl } from '../../services/urlUtils';
 import { useAlert } from '../GlobalAlert';
 
 interface AddModelFormProps {
@@ -41,6 +42,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
   const [apiModel, setApiModel] = useState('');
   const [description, setDescription] = useState('');
   const [endpoint, setEndpoint] = useState('');
+  const [modelBaseUrl, setModelBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [imageApiFormat, setImageApiFormat] = useState<ImageApiFormat>('gemini');
   const [workflowName, setWorkflowName] = useState('');
@@ -64,6 +66,22 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       setSelectedProviderId(volcengineProvider.id);
     }
   }, [type, videoMode, providerMode]);
+
+  useEffect(() => {
+    if (type === 'image' && imageApiFormat === 'comfyui') {
+      const comfyProvider = existingProviders.find(p => p.id === 'comfyui-local');
+      if (comfyProvider) {
+        setProviderMode('existing');
+        setSelectedProviderId('comfyui-local');
+      } else if (providerMode === 'custom' && !customProviderBaseUrl.trim()) {
+        setCustomProviderName('ComfyUI (本地)');
+        setCustomProviderBaseUrl('http://127.0.0.1:8188');
+      }
+      if (!workflowName.trim()) {
+        setWorkflowName('flux-dev-fp8');
+      }
+    }
+  }, [type, imageApiFormat]);
 
   const handleSave = () => {
     const resolvedApiModel = (type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
@@ -97,6 +115,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
     // 根据模型类型设置默认参数
     let params: ChatModelParams | ImageModelParams | VideoModelParams | AudioModelParams;
     let resolvedEndpoint = endpoint.trim() || undefined;
+    let resolvedBaseUrl = modelBaseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '') || undefined;
     
     if (type === 'chat') {
       params = { ...DEFAULT_CHAT_PARAMS };
@@ -115,11 +134,14 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
                 workflowName: workflowName.trim() || resolvedApiModel,
               }
             : { ...DEFAULT_IMAGE_PARAMS };
-      if (!resolvedEndpoint) {
+      if (imageApiFormat === 'comfyui') {
+        resolvedBaseUrl = resolvedBaseUrl
+          ? resolveComfyApiBaseUrl('', resolvedBaseUrl)
+          : undefined;
+        resolvedEndpoint = undefined;
+      } else if (!resolvedEndpoint) {
         resolvedEndpoint =
-          imageApiFormat === 'comfyui'
-            ? ''
-            : imageApiFormat === 'openai'
+          imageApiFormat === 'openai'
             ? '/v1/images/generations'
             : '/v1beta/models/{model}:generateContent';
       }
@@ -140,11 +162,14 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
                 }
               : { ...DEFAULT_VIDEO_PARAMS_SORA };
 
-      if (!resolvedEndpoint) {
+      if (videoMode === 'comfyui') {
+        resolvedBaseUrl = resolvedBaseUrl
+          ? resolveComfyApiBaseUrl('', resolvedBaseUrl)
+          : undefined;
+        resolvedEndpoint = undefined;
+      } else if (!resolvedEndpoint) {
         resolvedEndpoint =
-          videoMode === 'comfyui'
-            ? ''
-            : videoMode === 'sync'
+          videoMode === 'sync'
             ? '/v1/chat/completions'
             : videoMode === 'task'
               ? '/api/v3/contents/generations/tasks'
@@ -166,6 +191,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       apiModel: resolvedApiModel,
       type,
       providerId,
+      baseUrl: resolvedBaseUrl,
       endpoint: resolvedEndpoint,
       description: description.trim() || undefined,
       apiKey: providerMode === 'existing' ? (apiKey.trim() || undefined) : undefined,
@@ -259,7 +285,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             </button>
           </div>
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            ComfyUI 协议会读取 `/workflows/&lt;工作流名称&gt;.json`，并提交到提供商 Base URL 的 `/prompt`。
+            ComfyUI 协议会读取 `/workflows/&lt;工作流名称&gt;.json`，并提交到提供商 Base URL 的 `/prompt`。本地服务默认 `http://127.0.0.1:8188`，开发模式会自动走代理以绕过 CORS。
           </p>
         </div>
       )}
@@ -307,33 +333,49 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
         </div>
       )}
 
-      {/* API 端点 */}
-      <div>
-        <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">API 端点 (Endpoint)</label>
-        <input
-          type="text"
-          value={endpoint}
-          onChange={(e) => setEndpoint(e.target.value)}
-          placeholder={
-            type === 'chat'
-              ? '/v1/chat/completions'
-              : type === 'image'
-                ? imageApiFormat === 'comfyui'
-                  ? 'ComfyUI 可留空'
-                  : imageApiFormat === 'openai'
-                  ? '/v1/images/generations'
-                  : '/v1beta/models/{model}:generateContent'
-                : type === 'video'
-                  ? videoMode === 'comfyui'
-                    ? 'ComfyUI 可留空'
-                    : '/v1/videos 或 /api/v3/contents/generations/tasks'
-                  : '/v1/chat/completions'
-          }
-          className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
-        />
-        <p className="text-[9px] text-[var(--text-muted)] mt-1">
-          留空则使用默认端点；也可以填写完整 URL，例如 http://127.0.0.1:9880/v1/audio/speech
-        </p>
+      {/* API Base URL + 路径 */}
+      <div className="space-y-3">
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">
+            {(type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
+              ? 'ComfyUI API 地址'
+              : 'API Base URL'}
+          </label>
+          <input
+            type="text"
+            value={modelBaseUrl}
+            onChange={(e) => setModelBaseUrl(e.target.value)}
+            placeholder={
+              (type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
+                ? 'http://127.0.0.1:8188'
+                : 'http://192.168.1.197:3000'
+            }
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+          />
+        </div>
+        {!((type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')) && (
+          <div>
+            <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">API 路径 (Endpoint)</label>
+            <input
+              type="text"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              placeholder={
+                type === 'chat'
+                  ? '/v1/chat/completions'
+                  : type === 'image'
+                    ? imageApiFormat === 'openai'
+                      ? '/v1/images/generations'
+                      : '/v1beta/models/{model}:generateContent'
+                    : type === 'video'
+                      ? '/v1/videos 或 /api/v3/contents/generations/tasks'
+                      : '/v1/chat/completions'
+              }
+              className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+            />
+            <p className="text-[9px] text-[var(--text-muted)] mt-1">留空则使用该模型类型的默认路径</p>
+          </div>
+        )}
       </div>
 
       {/* 模型专属 API Key（仅在使用已有提供商时显示） */}
@@ -407,7 +449,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
                 type="text"
                 value={customProviderBaseUrl}
                 onChange={(e) => setCustomProviderBaseUrl(e.target.value)}
-                placeholder="如：https://api.openai.com"
+                placeholder="如：https://api.openai.com 或 http://127.0.0.1:8188"
                 className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
               />
             </div>

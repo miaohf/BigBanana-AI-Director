@@ -8,7 +8,8 @@
     "check:utf8": "node scripts/check-utf8.mjs",
     "build": "npm run check:utf8 && vite build",
     "preview": "vite preview",
-    "media-proxy": "node server/mediaProxyServer.mjs"
+    "media-proxy": "node server/mediaProxyServer.mjs",
+    "comfyui-proxy": "node server/comfyuiProxyServer.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

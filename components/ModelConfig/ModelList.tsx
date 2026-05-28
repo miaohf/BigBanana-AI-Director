@@ -17,8 +17,9 @@ import {
   getActiveModelsConfig,
   setActiveModel,
   getProviderById,
+  resolveModelApiBaseUrl,
 } from '../../services/modelRegistry';
-import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../../services/urlUtils';
+import { resolveEndpointUrl } from '../../services/urlUtils';
 import { useAlert } from '../GlobalAlert';
 import ModelCard from './ModelCard';
 import AddModelForm from './AddModelForm';
@@ -36,16 +37,8 @@ const typeDescriptions: Record<ModelType, string> = {
 };
 
 const getModelDisplayUrl = (model: ModelDefinition, providerBaseUrl: string): string => {
-  const params = model.params as any;
-  const usesComfyUi =
-    (model.type === 'image' && params?.apiFormat === 'comfyui') ||
-    (model.type === 'video' && params?.mode === 'comfyui');
-
-  if (usesComfyUi) {
-    return resolveComfyApiBaseUrl(providerBaseUrl, model.endpoint);
-  }
-
-  return resolveEndpointUrl(providerBaseUrl, model.endpoint || '');
+  const apiBase = resolveModelApiBaseUrl(model) || providerBaseUrl;
+  return resolveEndpointUrl(apiBase, model.endpoint || '');
 };
 
 const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
@@ -152,8 +145,16 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
       <div className="bg-[var(--bg-hover)]/50 border border-[var(--border-secondary)] rounded-lg p-3 flex items-start gap-2">
         <Info className="w-4 h-4 text-[var(--text-tertiary)] flex-shrink-0 mt-0.5" />
         <p className="text-[10px] text-[var(--text-tertiary)] leading-relaxed">
-          点击「使用此模型」按钮可切换激活模型。自定义模型配置了独立提供商后，API 请求会发送到对应的地址。
+          点击「使用此模型」可设置{type === 'chat' ? '全局默认' : ''}激活模型。
+          {type === 'chat' && '各项目在「剧本」阶段可单独选择分镜模型，与此处互不覆盖。'}
+          每张卡片可独立配置 API Key、Base URL 与参数；自定义模型配置了独立提供商后，请求会发往对应地址。
           点击展开按钮可调整模型参数。
+          {type === 'image' && (
+            <>
+              {' '}本地 ComfyUI：选择「ComfyUI Workflow（本地）」协议，提供商填 <code className="font-mono">http://127.0.0.1:8188</code>，
+              工作流 JSON 放入 <code className="font-mono">public/workflows/</code>。
+            </>
+          )}
         </p>
       </div>
 

@@ -17,6 +17,7 @@ import {
 } from './apiCore';
 import { toFriendlyModerationMessage } from '../errorMessageService';
 import { callVideoApi } from '../adapters/videoAdapter';
+import { isComfyUiVideoModel, getActiveVideoModel } from '../modelRegistry';
 import { resolveEndpointUrl } from '../urlUtils';
 
 const VOLCENGINE_TASK_DEFAULT_ENDPOINT = '/api/v3/contents/generations/tasks';
@@ -497,20 +498,27 @@ export const generateVideo = async (
   endImageBase64?: string,
   model: string = 'sora-2',
   aspectRatio: AspectRatio = '16:9',
-  duration: VideoDuration = 8
+  duration: VideoDuration = 8,
+  audioUrl?: string
 ): Promise<string> => {
-  const resolvedVideoModel = resolveModel('video', model);
-  const resolvedVideoModelId = (resolvedVideoModel as any)?.id || model;
-  const requestModel = resolveRequestModel('video', model) || '';
-  const resolvedEndpoint = (resolvedVideoModel as any)?.endpoint || '';
-  if ((resolvedVideoModel?.params as any)?.mode === 'comfyui') {
+  const activeVideoModel = getActiveVideoModel();
+  const resolvedVideoModel = resolveModel('video', model) as ReturnType<typeof resolveModel>;
+  const videoModel =
+    isComfyUiVideoModel(activeVideoModel)
+      ? activeVideoModel
+      : (resolvedVideoModel || activeVideoModel);
+  const resolvedVideoModelId = (videoModel as any)?.id || model;
+  const requestModel = resolveRequestModel('video', (videoModel as any)?.id || model) || '';
+  const resolvedEndpoint = (videoModel as any)?.endpoint || '';
+  if (isComfyUiVideoModel(videoModel)) {
     return callVideoApi({
       prompt,
       startImage: startImageBase64,
       endImage: endImageBase64,
+      audioUrl,
       aspectRatio,
       duration,
-    }, resolvedVideoModel as any);
+    }, videoModel as any);
   }
 
   const apiKey = checkApiKey('video', model);
@@ -536,7 +544,7 @@ export const generateVideo = async (
   }
 
   const isAsyncMode =
-    (resolvedVideoModel?.params as any)?.mode === 'async' ||
+    (videoModel?.params as any)?.mode === 'async' ||
     isSoraCompatibleModel ||
     normalizedRequestModel.startsWith('veo_3_1-fast');
 

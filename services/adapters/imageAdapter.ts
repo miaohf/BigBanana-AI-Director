@@ -12,7 +12,7 @@ import {
   mapAspectRatioToOpenAiImageSize,
 } from '../imageModelUtils';
 import { ApiKeyError } from './chatAdapter';
-import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../urlUtils';
+import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
 
 /**
  * 重试操作
@@ -86,6 +86,105 @@ const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
 const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
 const COMFYUI_POLL_INTERVAL_MS = 1000;
 const COMFYUI_MAX_POLLS = 180;
+/** 尾帧以首帧为底图：需保留身份/场景，同时允许构图与动作明显变化 */
+const COMFYUI_IMG2IMG_DENOISE_CONTINUITY = 0.65;
+/** 首帧以角色参考图为底图：较高 denoise 以兼顾身份锁定与分镜差异 */
+const COMFYUI_IMG2IMG_DENOISE_CHARACTER = 0.78;
+
+const dataUrlToBlob = (dataUrl: string): Blob => {
+  const match = dataUrl.match(/^data:([a-zA-Z0-9.+/-]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('ComfyUI 参考图格式无效，请重新上传后重试。');
+  }
+  const mimeType = match[1];
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+};
+
+const uploadComfyImage = async (apiBase: string, imageDataUrl: string, filename: string): Promise<string> => {
+  const blob = dataUrlToBlob(imageDataUrl);
+  const formData = new FormData();
+  formData.append('image', blob, filename);
+  formData.append('overwrite', 'true');
+  const uploadUrl = buildComfyApiUrl(apiBase, '/upload/image');
+  console.info('[ComfyUI Image] Upload reference image:', uploadUrl, filename);
+  const response = await fetch(uploadUrl, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!response.ok) {
+    const backendMessage = await parseHttpErrorBody(response);
+    throw new Error(`ComfyUI 参考图上传失败：${backendMessage}`);
+  }
+  const result = await response.json();
+  return result?.name || filename;
+};
+
+const resizeDataUrlToSize = async (
+  dataUrl: string,
+  targetWidth: number,
+  targetHeight: number
+): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('无法创建 canvas 上下文'));
+        return;
+      }
+      const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+      const scaledWidth = img.width * scale;
+      const scaledHeight = img.height * scale;
+      const offsetX = (targetWidth - scaledWidth) / 2;
+      const offsetY = (targetHeight - scaledHeight) / 2;
+      ctx.drawImage(img, offsetX, offsetY, scaledWidth, scaledHeight);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => reject(new Error('参考图加载失败'));
+    img.src = dataUrl.startsWith('data:') ? dataUrl : `data:image/png;base64,${dataUrl}`;
+  });
+
+const resolveImg2ImgWorkflowName = (workflowName: string): string => {
+  const trimmed = workflowName.trim();
+  if (trimmed.endsWith('-img2img') || trimmed.endsWith('_img2img')) {
+    return trimmed;
+  }
+  const baseName = trimmed.endsWith('.json') ? trimmed.slice(0, -5) : trimmed;
+  return `${baseName}-img2img`;
+};
+
+const pickComfyImg2ImgSource = (
+  continuityReferenceImage?: string,
+  characterReferenceImage?: string
+): { source?: string; mode: 'continuity' | 'character' | 'none' } => {
+  if (continuityReferenceImage) {
+    return { source: continuityReferenceImage, mode: 'continuity' };
+  }
+  if (characterReferenceImage) {
+    return { source: characterReferenceImage, mode: 'character' };
+  }
+  return { mode: 'none' };
+};
+
+const resolveComfyImg2ImgDenoise = (
+  mode: ReturnType<typeof pickComfyImg2ImgSource>['mode'],
+  explicit?: number
+): number => {
+  if (typeof explicit === 'number' && explicit > 0 && explicit <= 1) {
+    return explicit;
+  }
+  if (mode === 'continuity') return COMFYUI_IMG2IMG_DENOISE_CONTINUITY;
+  if (mode === 'character') return COMFYUI_IMG2IMG_DENOISE_CHARACTER;
+  return 1;
+};
 
 const truncatePromptToMaxChars = (
   input: string,
@@ -192,6 +291,8 @@ const patchComfyWorkflow = (
     height: number;
     seed: number;
     steps: number;
+    referenceImageName?: string;
+    denoise?: number;
   }
 ): any => {
   const patched = structuredClone(workflow);
@@ -201,10 +302,12 @@ const patchComfyWorkflow = (
   }
 
   let promptPatched = false;
+  let referenceImagePatched = false;
   Object.values(nodes).forEach((node: any) => {
     const inputs = node?.inputs;
     if (!inputs || typeof inputs !== 'object') return;
     const classType = String(node.class_type || '').toLowerCase();
+    const title = String(node._meta?.title || '').toLowerCase();
 
     if ('text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
       inputs.text = options.prompt;
@@ -223,6 +326,20 @@ const patchComfyWorkflow = (
     if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
     if ('noise_seed' in inputs && typeof inputs.noise_seed === 'number') inputs.noise_seed = options.seed;
     if ('steps' in inputs && typeof inputs.steps === 'number') inputs.steps = options.steps;
+    if (typeof options.denoise === 'number' && 'denoise' in inputs && typeof inputs.denoise === 'number') {
+      inputs.denoise = options.denoise;
+    }
+
+    if (
+      options.referenceImageName &&
+      classType === 'loadimage' &&
+      'image' in inputs &&
+      typeof inputs.image === 'string' &&
+      (title.includes('reference') || title.includes('load image') || !referenceImagePatched)
+    ) {
+      inputs.image = options.referenceImageName;
+      referenceImagePatched = true;
+    }
   });
 
   if (!promptPatched) {
@@ -237,7 +354,9 @@ const buildComfyViewUrl = (apiBase: string, image: any): string => {
   params.set('filename', String(image.filename || ''));
   if (image.subfolder) params.set('subfolder', String(image.subfolder));
   if (image.type) params.set('type', String(image.type));
-  return `${apiBase}/view?${params.toString()}`;
+  const baseViewUrl = buildComfyApiUrl(apiBase, '/view');
+  const separator = baseViewUrl.includes('?') ? '&' : '?';
+  return `${baseViewUrl}${separator}${params.toString()}`;
 };
 
 const callComfyImageApi = async (
@@ -247,24 +366,76 @@ const callComfyImageApi = async (
     prompt: string;
     aspectRatio: AspectRatio;
     steps: number;
+    referenceImages?: string[];
+    continuityReferenceImage?: string;
+    characterReferenceImage?: string;
+    img2imgDenoise?: number;
+    seed?: number;
   }
 ): Promise<string> => {
   try {
-    console.info('[ComfyUI Image] Start generation:', { apiBase, workflowName });
-    const workflow = await loadComfyWorkflowTemplate(workflowName);
     const { width, height } = mapAspectRatioToComfySize(options.aspectRatio);
-    const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const img2imgPick = pickComfyImg2ImgSource(
+      options.continuityReferenceImage,
+      options.characterReferenceImage
+    );
+    const useImg2Img = !!img2imgPick.source;
+    const effectiveWorkflowName = useImg2Img
+      ? resolveImg2ImgWorkflowName(workflowName)
+      : workflowName;
+    const denoise = useImg2Img
+      ? resolveComfyImg2ImgDenoise(img2imgPick.mode, options.img2imgDenoise)
+      : undefined;
+    const seed = typeof options.seed === 'number'
+      ? options.seed
+      : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+
+    console.info('[ComfyUI Image] Start generation:', {
+      apiBase,
+      workflowName: effectiveWorkflowName,
+      mode: useImg2Img ? `img2img(${img2imgPick.mode})` : 'text2img',
+      denoise,
+    });
+
+    let workflow: any;
+    let referenceImageName: string | undefined;
+    try {
+      workflow = await loadComfyWorkflowTemplate(effectiveWorkflowName);
+      if (useImg2Img && img2imgPick.source) {
+        const resizedReference = await resizeDataUrlToSize(img2imgPick.source, width, height);
+        referenceImageName = await uploadComfyImage(
+          apiBase,
+          resizedReference,
+          `bigbanana-ref-${Date.now()}.png`
+        );
+      }
+    } catch (loadError) {
+      if (useImg2Img) {
+        console.warn(
+          '[ComfyUI Image] img2img 工作流未找到，回退为文生图（一致性可能下降）:',
+          effectiveWorkflowName,
+          loadError
+        );
+        workflow = await loadComfyWorkflowTemplate(workflowName);
+        referenceImageName = undefined;
+      } else {
+        throw loadError;
+      }
+    }
+
     const prompt = patchComfyWorkflow(workflow, {
       prompt: options.prompt,
       width,
       height,
       seed,
       steps: options.steps,
+      referenceImageName,
+      denoise,
     });
-    console.info('[ComfyUI Image] Workflow patched:', { width, height, seed, steps: options.steps });
+    console.info('[ComfyUI Image] Workflow patched:', { width, height, seed, steps: options.steps, denoise });
 
     const clientId = `bigbanana-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const promptUrl = `${apiBase}/prompt`;
+    const promptUrl = buildComfyApiUrl(apiBase, '/prompt');
     console.info('[ComfyUI Image] POST prompt:', promptUrl);
     const queueResponse = await fetch(promptUrl, {
       method: 'POST',
@@ -286,7 +457,7 @@ const callComfyImageApi = async (
 
     for (let i = 0; i < COMFYUI_MAX_POLLS; i += 1) {
       await new Promise(resolve => setTimeout(resolve, COMFYUI_POLL_INTERVAL_MS));
-      const historyUrl = `${apiBase}/history/${promptId}`;
+      const historyUrl = buildComfyApiUrl(apiBase, `/history/${promptId}`);
       const historyResponse = await fetch(historyUrl);
       if (!historyResponse.ok) {
         if (i % 10 === 0) console.warn('[ComfyUI Image] History polling failed:', historyUrl, historyResponse.status);
@@ -339,6 +510,28 @@ export const callImageApi = async (
   
   // 确定宽高比
   const aspectRatio = options.aspectRatio || activeModel.params.defaultAspectRatio;
+
+  // ComfyUI 走 img2img 底图约束，不再套云端多模态参考图文案
+  if (apiFormat === 'comfyui') {
+    const promptLimitResult = truncatePromptToMaxChars(options.prompt, MAX_IMAGE_PROMPT_CHARS);
+    if (promptLimitResult.wasTruncated) {
+      console.warn(
+        `[ImagePrompt] Prompt exceeded ${MAX_IMAGE_PROMPT_CHARS} chars ` +
+        `(${promptLimitResult.originalLength}). Truncated before ComfyUI request.`
+      );
+    }
+    const workflowName = activeModel.params.workflowName || apiModel;
+    return callComfyImageApi(apiBase, workflowName, {
+      prompt: promptLimitResult.text,
+      aspectRatio,
+      steps: activeModel.params.steps || 20,
+      referenceImages: options.referenceImages,
+      continuityReferenceImage: options.continuityReferenceImage,
+      characterReferenceImage: options.characterReferenceImage,
+      img2imgDenoise: options.img2imgDenoise,
+      seed: options.seed,
+    });
+  }
   
   // 构建提示词
   let finalPrompt = options.prompt;
@@ -379,16 +572,6 @@ export const callImageApi = async (
     );
   }
   finalPrompt = promptLimitResult.text;
-
-  if (apiFormat === 'comfyui') {
-    const comfyApiBase = resolveComfyApiBaseUrl(apiBase, activeModel.endpoint);
-    const workflowName = activeModel.params.workflowName || apiModel;
-    return callComfyImageApi(comfyApiBase, workflowName, {
-      prompt: finalPrompt,
-      aspectRatio,
-      steps: activeModel.params.steps || 20,
-    });
-  }
 
   // 获取 API 配置（ComfyUI 本地工作流不需要 API Key）
   const apiKey = getApiKeyForModel(activeModel.id);

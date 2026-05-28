@@ -51,11 +51,18 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   };
 
   const videoModels = getVideoModels().filter((m) => m.isEnabled);
-  const defaultModel = getActiveVideoModel();
+  const activeVideoModel = getActiveVideoModel();
 
-  const [selectedModelId, setSelectedModelId] = useState<string>(
-    normalizeModelId(shot.videoModel) || defaultModel?.id || videoModels[0]?.id || 'sora-2'
-  );
+  const resolveInitialModelId = (): string => {
+    if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
+      return activeVideoModel.id;
+    }
+    const perShot = normalizeModelId(shot.videoModel);
+    if (perShot && videoModels.some((m) => m.id === perShot)) return perShot;
+    return videoModels[0]?.id || 'sora-2';
+  };
+
+  const [selectedModelId, setSelectedModelId] = useState<string>(resolveInitialModelId);
   const [veoFastQuality, setVeoFastQuality] = useState<'standard' | '4k'>(
     resolveVeoFastQuality(shot.videoModel)
   );
@@ -85,7 +92,9 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         ? 'Doubao Task'
         : modelRouting.family === 'veo-fast'
           ? 'Veo Fast'
-          : 'Unknown';
+          : modelRouting.family === 'comfyui-ltx'
+            ? 'ComfyUI LTX'
+            : 'Unknown';
 
   const getRecommendedModeLabel = (modelId: string): string => {
     const routing = resolveVideoModelRouting(modelId);
@@ -114,10 +123,17 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   }, [selectedModelId]);
 
   useEffect(() => {
-    if (!shot.videoModel) return;
-    setSelectedModelId(normalizeModelId(shot.videoModel));
-    setVeoFastQuality(resolveVeoFastQuality(shot.videoModel));
-  }, [shot.videoModel]);
+    if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
+      setSelectedModelId(activeVideoModel.id);
+      onModelChange?.(activeVideoModel.id);
+      return;
+    }
+    const perShot = normalizeModelId(shot.videoModel);
+    if (perShot && videoModels.some((m) => m.id === perShot)) {
+      setSelectedModelId(perShot);
+      setVeoFastQuality(resolveVeoFastQuality(shot.videoModel));
+    }
+  }, [shot.id, shot.videoModel, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
 
   const handleGenerate = () => {
     onGenerate(aspectRatio, duration, effectiveModelId);
@@ -191,7 +207,11 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           <p className="text-[9px] text-[var(--text-muted)] font-mono">
             ✦ {selectedModel.name}:
             {selectedModel.params.mode === 'comfyui'
-              ? ` ComfyUI 工作流，支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒`
+              ? ` ComfyUI 工作流，支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒${
+                  selectedModel.params.supportsEndFrame ? '，支持首尾帧' : ''
+                }${
+                  selectedModel.params.supportsAudio ? '，可注入镜头配音' : ''
+                }`
               : selectedModel.params.mode === 'async'
               ? ` 支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒`
               : ` 同步模式，支持 ${selectedModel.params.supportedAspectRatios.join('/')}`}

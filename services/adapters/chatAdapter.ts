@@ -5,7 +5,7 @@
 
 import { ChatModelDefinition, ChatOptions, ChatModelParams } from '../../types/model';
 import { getApiKeyForModel, getApiBaseUrlForModel, getActiveChatModel } from '../modelRegistry';
-import { DEFAULT_CHAT_VERIFY_MODEL } from '../modelIdUtils';
+import { getConfiguredChatModelApiName } from '../modelRegistry';
 import { resolveEndpointUrl } from '../urlUtils';
 
 /**
@@ -192,7 +192,7 @@ export const callChatApi = async (
 export const verifyApiKey = async (
   apiKey: string,
   baseUrl?: string,
-  modelName: string = DEFAULT_CHAT_VERIFY_MODEL
+  modelName: string = getConfiguredChatModelApiName()
 ): Promise<{ success: boolean; message: string }> => {
   try {
     const { url, endpoint } = normalizeChatApiBase(baseUrl);

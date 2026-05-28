@@ -22,7 +22,7 @@ import { useAlert } from '../GlobalAlert';
 import { getAllAssetLibraryItems, saveAssetToLibrary, deleteAssetFromLibrary } from '../../services/storageService';
 import { applyLibraryItemToProject, createLibraryItemFromCharacter, createLibraryItemFromScene, createLibraryItemFromProp, cloneCharacterForProject } from '../../services/assetLibraryService';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, setUserAspectRatio, getActiveImageModel } from '../../services/modelRegistry';
+import { getUserAspectRatio, setUserAspectRatio, getActiveImageModel, resolveShotGenerationModel } from '../../services/modelRegistry';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import CharacterLibraryPickerModal from './CharacterLibraryPicker';
 import ProjectAssetPicker from './ProjectAssetPicker';
@@ -180,7 +180,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const language = getProjectLanguage(project.language, project.scriptData?.language);
   const visualStyle = getProjectVisualStyle(project.visualStyle, project.scriptData?.visualStyle);
   const genre = project.scriptData?.genre || DEFAULTS.genre;
-  const shotPromptModel = project.shotGenerationModel || project.scriptData?.shotGenerationModel || DEFAULTS.modelVersion;
+  const shotPromptModel = resolveShotGenerationModel(
+    project.shotGenerationModel || project.scriptData?.shotGenerationModel
+  );
 
   /**
    * 组件加载时，检测并重置卡住的生成状态

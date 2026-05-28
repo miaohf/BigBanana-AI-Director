@@ -3,6 +3,7 @@ import { BookOpen, Wand2, BrainCircuit, AlertCircle, ChevronRight, ImagePlus } f
 import OptionSelector from './OptionSelector';
 import { DURATION_OPTIONS, LANGUAGE_OPTIONS, VISUAL_STYLE_OPTIONS, STYLES } from './constants';
 import ModelSelector from '../ModelSelector';
+import { getChatModelApiName } from '../../services/modelRegistry';
 import { parseDurationToSeconds } from '../../services/durationParser';
 
 interface Props {
@@ -170,7 +171,9 @@ const ConfigPanel: React.FC<Props> = ({
             label="分镜生成模型"
           />
           <p className="text-[9px] text-[var(--text-muted)]">
-            在
+            仅作用于当前项目，与「模型配置 → 对话模型」中的「当前使用」相互独立。当前 API 模型：
+            <span className="font-mono text-[var(--text-secondary)] ml-1">{getChatModelApiName(model) || '未配置'}</span>
+            。在
             <button
               type="button"
               onClick={onShowModelConfig}

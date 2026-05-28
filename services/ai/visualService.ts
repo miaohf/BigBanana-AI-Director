@@ -823,6 +823,7 @@ export const generateImage = async (
   negativePrompt: string = '',
   options?: {
     continuityReferenceImage?: string;
+    characterReferenceImage?: string;
     referencePackType?: ReferencePackType;
   }
 ): Promise<string> => {
@@ -1020,9 +1021,24 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
     finalPrompt = promptLimitResult.text;
 
     if (imageApiFormat === 'comfyui') {
+      const characterRef = options?.characterReferenceImage;
+      let comfyPrompt = finalPrompt;
+      if (continuityReferenceImage) {
+        comfyPrompt += '\n\n[ComfyUI end frame] Keep the same character identity, outfit, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame.';
+      } else if (characterRef) {
+        comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference image character face, hairstyle, age, body proportions and outfit. Apply the shot description for pose, camera and environment.';
+      }
       const imageUrl = await callImageApi({
-        prompt: finalPrompt,
+        prompt: comfyPrompt,
         aspectRatio,
+        referenceImages: effectiveReferenceImages,
+        continuityReferenceImage,
+        characterReferenceImage: characterRef,
+        img2imgDenoise: continuityReferenceImage
+          ? 0.65
+          : characterRef
+            ? 0.78
+            : undefined,
       }, activeImageModel as any);
       addRenderLogWithTokens({
         type: 'keyframe',

@@ -19,7 +19,9 @@ import {
   resolvePromptTemplateConfig,
   withTemplateFallback,
 } from '../../services/promptTemplateService';
+import { getModelById } from '../../services/modelRegistry';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
+import { VideoModelParams } from '../../types/model';
 
 const KEYFRAME_META_SPLITTER = '\n\n---PROMPT_META_START---';
 
@@ -49,7 +51,7 @@ const dedupeImageRefs = (images: string[]): string[] => {
   return output;
 };
 
-export type VideoModelFamily = 'sora' | 'doubao-task' | 'veo-fast' | 'unknown';
+export type VideoModelFamily = 'sora' | 'doubao-task' | 'veo-fast' | 'comfyui-ltx' | 'unknown';
 
 export interface VideoModelRouting {
   family: VideoModelFamily;
@@ -126,6 +128,18 @@ export const resolveVideoModelRouting = (videoModel: string): VideoModelRouting 
       supportsStartFrame: true,
       supportsEndFrame: true,
       prefersNineGridStoryboard: true,
+    };
+  }
+
+  const registryModel = getModelById(normalizedModelId);
+  if (registryModel?.type === 'video' && registryModel.providerId === 'comfyui-local') {
+    const params = registryModel.params as VideoModelParams;
+    return {
+      family: 'comfyui-ltx',
+      normalizedModelId,
+      supportsStartFrame: true,
+      supportsEndFrame: params.supportsEndFrame ?? false,
+      prefersNineGridStoryboard: false,
     };
   }
 
@@ -250,6 +264,96 @@ export const getPropsInfoForShot = (shot: Shot, scriptData: ProjectState['script
     .map(propId => scriptData.props.find(p => String(p.id) === String(propId)))
     .filter((p): p is NonNullable<typeof p> => !!p)
     .map(p => ({ name: p.name, description: p.description || p.visualPrompt || '', hasImage: !!p.referenceImage }));
+};
+
+/**
+ * 获取镜头主角色参考图（变体优先，其次基础参考图）
+ */
+export const pickPrimaryCharacterReference = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData']
+): string | undefined => {
+  if (!scriptData || !shot.characters?.length) return undefined;
+
+  for (const charId of shot.characters) {
+    const char = scriptData.characters.find(c => String(c.id) === String(charId));
+    if (!char) continue;
+
+    const varId = shot.characterVariations?.[charId];
+    if (varId) {
+      const variation = char.variations?.find(v => v.id === varId);
+      if (variation?.referenceImage) return variation.referenceImage;
+    }
+    if (char.referenceImage) return char.referenceImage;
+  }
+  return undefined;
+};
+
+/**
+ * 从剧本/分镜数据组装当前镜头、当前帧的文字上下文。
+ * 优先使用分镜阶段为 start/end 分别生成的 visualPrompt，再回落到 actionSummary 等字段。
+ */
+export const buildShotScriptContext = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+  frameType: 'start' | 'end'
+): string => {
+  const lines: string[] = [];
+  const frameKf = shot.keyframes?.find(k => k.type === frameType);
+  const frameVisual = String(frameKf?.visualPrompt || '').trim();
+  const hasRenderedMeta = frameVisual.includes(KEYFRAME_META_SPLITTER);
+
+  if (frameVisual && !hasRenderedMeta) {
+    lines.push(frameVisual);
+  } else {
+    const action = String(shot.actionSummary || '').trim();
+    if (action) {
+      lines.push(
+        frameType === 'start'
+          ? `${action}（起始瞬间：动作尚未完成，建立初始构图）`
+          : `${action}（结束瞬间：动作结果已呈现，构图收束）`
+      );
+    }
+  }
+
+  if (shot.shotSize?.trim()) {
+    lines.push(`景别：${shot.shotSize.trim()}`);
+  }
+  if (shot.cameraMovement?.trim()) {
+    lines.push(`运镜：${shot.cameraMovement.trim()}`);
+  }
+  if (shot.dialogue?.trim()) {
+    lines.push(`对白：${shot.dialogue.trim()}`);
+  }
+
+  if (scriptData) {
+    const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
+    if (scene) {
+      const sceneParts = [scene.location, scene.time, scene.atmosphere]
+        .map(v => String(v || '').trim())
+        .filter(Boolean);
+      if (sceneParts.length > 0) {
+        lines.push(`场景：${sceneParts.join('，')}`);
+      }
+    }
+
+    if (shot.characters?.length) {
+      const names = shot.characters
+        .map(charId => scriptData.characters.find(c => String(c.id) === String(charId)))
+        .filter((char): char is NonNullable<typeof char> => !!char);
+      if (names.length > 0) {
+        lines.push(`出镜角色：${names.map(c => c.name).join('、')}`);
+        names.forEach(char => {
+          const look = String(char.visualPrompt || char.coreFeatures || '').trim();
+          if (look) {
+            lines.push(`${char.name}外观：${look.slice(0, 280)}`);
+          }
+        });
+      }
+    }
+  }
+
+  return lines.join('\n').trim() || '镜头画面';
 };
 
 /**

@@ -1,5 +1,6 @@
 import { SeriesProject, Series, Episode, Character } from '../types';
-import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from './modelIdUtils';
+import { resolveShotGenerationModel } from './modelRegistry';
+import { normalizeChatModelId } from './modelIdUtils';
 
 const generateId = (prefix: string): string => {
   const rand = Math.random().toString(36).slice(2, 6);
@@ -7,8 +8,12 @@ const generateId = (prefix: string): string => {
 };
 
 const normalizeStoredChatModel = (modelId?: string): string => {
-  const normalized = normalizeChatModelId(modelId);
-  return !normalized || normalized === 'gpt-5.2' ? DEFAULT_CHAT_VERIFY_MODEL : normalized;
+  try {
+    return resolveShotGenerationModel(modelId);
+  } catch {
+    const normalized = normalizeChatModelId(modelId);
+    return normalized || '';
+  }
 };
 
 interface LegacyProjectState {

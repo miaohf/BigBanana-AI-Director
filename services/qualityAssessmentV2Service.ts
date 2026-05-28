@@ -3,11 +3,10 @@ import {
   chatCompletion,
   parseJsonWithRecovery,
   retryOperation,
-  getActiveChatModel,
 } from './aiService';
 import { assessShotQuality } from './qualityAssessmentService';
 import { findSceneByIdCompat } from './storyboardIdUtils';
-import { DEFAULT_CHAT_VERIFY_MODEL } from './modelIdUtils';
+import { getConfiguredChatModelApiName } from './modelRegistry';
 
 const QUALITY_SCHEMA_VERSION = 2;
 
@@ -255,12 +254,9 @@ export const assessShotQualityWithLLM = async (
   scriptData?: ScriptData | null,
   options?: LLMQualityAssessmentOptions
 ): Promise<ShotQualityAssessment> => {
-  const activeChatModel = getActiveChatModel() as any;
   const model =
     options?.model ||
-    activeChatModel?.apiModel ||
-    activeChatModel?.id ||
-    DEFAULT_CHAT_VERIFY_MODEL;
+    getConfiguredChatModelApiName();
 
   try {
     const prompt = buildPrompt(shot, scriptData);

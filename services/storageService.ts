@@ -3,7 +3,8 @@ import { runV2ToV3Migration, runEpisodeTitleFixMigration } from './migrationServ
 import { materializeProjectVideosForExport, migrateProjectVideosToOPFS } from './videoStorageService';
 import { reconcileShotSceneIds } from './storyboardIdUtils';
 import { sanitizePromptTemplateOverrides } from './promptTemplateService';
-import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from './modelIdUtils';
+import { normalizeChatModelId } from './modelIdUtils';
+import { getConfiguredChatModelId, resolveShotGenerationModel } from './modelRegistry';
 
 const DB_NAME = 'BigBananaDB';
 const DB_VERSION = 3;
@@ -32,8 +33,7 @@ export interface IndexedDBExportPayload {
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 const normalizeStoredChatModel = (modelId?: string): string => {
-  const normalized = normalizeChatModelId(modelId);
-  return !normalized || normalized === 'gpt-5.2' ? DEFAULT_CHAT_VERIFY_MODEL : normalized;
+  return resolveShotGenerationModel(modelId);
 };
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -371,7 +371,7 @@ export const createNewEpisode = (projectId: string, seriesId: string, episodeNum
     targetDuration: '60s',
     language: '中文',
     visualStyle: '3d-animation',
-    shotGenerationModel: DEFAULT_CHAT_VERIFY_MODEL,
+    shotGenerationModel: getConfiguredChatModelId(),
     scriptData: null,
     shots: [],
     isParsingScript: false,

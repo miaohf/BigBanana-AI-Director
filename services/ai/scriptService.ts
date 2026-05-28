@@ -1628,7 +1628,7 @@ export const generateShotList = async (
         shotsPerScene: sceneShots.length,
         visualStyle: previousScriptData.visualStyle || visualStyle,
         language: previousScriptData.language || lang,
-        model: previousScriptData.shotGenerationModel || model,
+        model,
         artDirectionSeed: previousScriptData.artDirection?.consistencyAnchors || ''
       });
       if (!reusableSceneBuckets.has(signature)) {

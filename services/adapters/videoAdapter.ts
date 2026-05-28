@@ -4,9 +4,14 @@
  */
 
 import { VideoModelDefinition, VideoGenerateOptions, AspectRatio, VideoDuration } from '../../types/model';
-import { getApiKeyForModel, getApiBaseUrlForModel, getActiveVideoModel } from '../modelRegistry';
+import {
+  getApiKeyForModel,
+  getApiBaseUrlForModel,
+  getActiveVideoModel,
+  isComfyUiVideoModel,
+} from '../modelRegistry';
 import { ApiKeyError } from './chatAdapter';
-import { resolveComfyApiBaseUrl, resolveEndpointUrl } from '../urlUtils';
+import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
 
 /**
  * 重试操作
@@ -127,7 +132,7 @@ const parseHttpErrorBody = async (res: Response): Promise<string> => {
 };
 
 const dataUrlToBlob = (dataUrl: string): Blob => {
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  const match = dataUrl.match(/^data:([a-zA-Z0-9.+/-]+);base64,(.+)$/);
   if (!match) {
     throw new Error('ComfyUI 视频工作流参考图格式无效。');
   }
@@ -140,45 +145,84 @@ const dataUrlToBlob = (dataUrl: string): Blob => {
   return new Blob([bytes], { type: mimeType });
 };
 
-const resolveWorkflowTemplateUrl = (workflowName: string): string => {
+const guessMediaExtension = (mimeType: string, fallback: string): string => {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes('wav')) return 'wav';
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+  if (normalized.includes('ogg')) return 'ogg';
+  if (normalized.includes('webm')) return 'webm';
+  if (normalized.includes('png')) return 'png';
+  if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
+  return fallback;
+};
+
+const uploadComfyInputFile = async (
+  apiBase: string,
+  dataUrl: string,
+  filename: string
+): Promise<string> => {
+  const blob = dataUrlToBlob(dataUrl);
+  const attempts: Array<{ path: string; field: string }> = [
+    { path: '/upload/image', field: 'image' },
+    { path: '/upload/audio', field: 'audio' },
+  ];
+  let lastError = '未知错误';
+
+  for (const attempt of attempts) {
+    const formData = new FormData();
+    formData.append(attempt.field, blob, filename);
+    formData.append('overwrite', 'true');
+    const uploadUrl = buildComfyApiUrl(apiBase, attempt.path);
+    console.info('[ComfyUI Video] Upload input file:', uploadUrl, filename);
+    const response = await fetch(uploadUrl, {
+      method: 'POST',
+      body: formData,
+    });
+    if (response.ok) {
+      const result = await response.json();
+      return result?.name || filename;
+    }
+    lastError = await parseHttpErrorBody(response);
+  }
+
+  throw new Error(`ComfyUI 文件上传失败：${lastError}`);
+};
+
+const uploadComfyImage = async (apiBase: string, imageDataUrl: string, filename: string): Promise<string> =>
+  uploadComfyInputFile(apiBase, imageDataUrl, filename);
+
+const uploadComfyAudio = async (apiBase: string, audioDataUrl: string, filename: string): Promise<string> =>
+  uploadComfyInputFile(apiBase, audioDataUrl, filename);
+
+const resolveWorkflowTemplateUrls = (workflowName: string): string[] => {
   const trimmed = workflowName.trim();
   if (!trimmed) {
     throw new Error('ComfyUI 视频工作流名称为空，请在视频模型中配置 workflowName。');
   }
   if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
-    return trimmed;
+    return [trimmed];
   }
-  const filename = trimmed.endsWith('.json') ? trimmed : `${trimmed}.json`;
-  return `/workflows/${encodeURIComponent(filename)}`;
+  const baseName = trimmed.endsWith('.json') ? trimmed.slice(0, -5) : trimmed;
+  const candidates = [
+    baseName,
+    baseName.replace(/-/g, '_'),
+    baseName.replace(/_/g, '-'),
+  ];
+  return Array.from(new Set(candidates)).map(name => `/workflows/${encodeURIComponent(`${name}.json`)}`);
 };
 
 const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
-  const url = resolveWorkflowTemplateUrl(workflowName);
-  console.info('[ComfyUI Video] Loading workflow template:', url);
-  const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`ComfyUI 视频工作流模板加载失败：${url}（HTTP ${response.status}）`);
+  const urls = resolveWorkflowTemplateUrls(workflowName);
+  for (const url of urls) {
+    console.info('[ComfyUI Video] Loading workflow template:', url);
+    const response = await fetch(url, { cache: 'no-store' });
+    if (response.ok) {
+      console.info('[ComfyUI Video] Workflow template loaded:', url);
+      return response.json();
+    }
+    console.warn('[ComfyUI Video] Workflow template not found:', url, response.status);
   }
-  console.info('[ComfyUI Video] Workflow template loaded:', url);
-  return response.json();
-};
-
-const uploadComfyImage = async (apiBase: string, imageDataUrl: string, filename: string): Promise<string> => {
-  const formData = new FormData();
-  formData.append('image', dataUrlToBlob(imageDataUrl), filename);
-  formData.append('overwrite', 'true');
-  const uploadUrl = `${apiBase}/upload/image`;
-  console.info('[ComfyUI Video] Upload reference image:', uploadUrl, filename);
-  const response = await fetch(uploadUrl, {
-    method: 'POST',
-    body: formData,
-  });
-  if (!response.ok) {
-    const detail = await parseHttpErrorBody(response);
-    throw new Error(`ComfyUI 参考图上传失败：${detail}`);
-  }
-  const result = await response.json();
-  return result?.name || filename;
+  throw new Error(`ComfyUI 视频工作流模板加载失败：已尝试 ${urls.join('、')}`);
 };
 
 const patchComfyVideoWorkflow = (
@@ -192,6 +236,7 @@ const patchComfyVideoWorkflow = (
     duration: number;
     startImageName?: string;
     endImageName?: string;
+    audioName?: string;
   }
 ): any => {
   const patched = structuredClone(workflow);
@@ -200,17 +245,54 @@ const patchComfyVideoWorkflow = (
     throw new Error('ComfyUI 视频工作流模板格式无效：需要 API Format JSON。');
   }
 
+  const usesPrimitivePrompt = Object.values(nodes).some((node: any) =>
+    String(node?._meta?.title || '').toLowerCase() === 'prompt' &&
+    String(node?.class_type || '') === 'PrimitiveStringMultiline'
+  );
+
+  let frameRate = 25;
+  Object.values(nodes).forEach((node: any) => {
+    const title = String(node?._meta?.title || '').toLowerCase();
+    if (title === 'frame rate' && typeof node?.inputs?.value === 'number') {
+      frameRate = node.inputs.value;
+    }
+  });
+
   let promptPatched = false;
   let firstImagePatched = false;
   Object.values(nodes).forEach((node: any) => {
     const inputs = node?.inputs;
     if (!inputs || typeof inputs !== 'object') return;
     const classType = String(node.class_type || '').toLowerCase();
+    const title = String(node._meta?.title || '').toLowerCase();
+    const isNegativeClip = classType.includes('clip') && title.includes('negative');
 
-    if ('text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
+    if (
+      title === 'prompt' &&
+      classType === 'primitivestringmultiline' &&
+      'value' in inputs &&
+      typeof inputs.value === 'string'
+    ) {
+      inputs.value = options.prompt;
+      promptPatched = true;
+    }
+
+    if (!isNegativeClip && title.includes('positive') && 'text' in inputs && typeof inputs.text === 'string') {
       inputs.text = options.prompt;
       promptPatched = true;
     }
+
+    if (
+      !usesPrimitivePrompt &&
+      !isNegativeClip &&
+      'text' in inputs &&
+      typeof inputs.text === 'string' &&
+      classType.includes('clip')
+    ) {
+      inputs.text = options.prompt;
+      promptPatched = true;
+    }
+
     if ('prompt' in inputs && typeof inputs.prompt === 'string') {
       inputs.prompt = options.prompt;
       promptPatched = true;
@@ -219,17 +301,64 @@ const patchComfyVideoWorkflow = (
       inputs.positive = options.prompt;
       promptPatched = true;
     }
-    if ('width' in inputs && typeof inputs.width === 'number') inputs.width = options.width;
-    if ('height' in inputs && typeof inputs.height === 'number') inputs.height = options.height;
+
+    if (title === 'width' && 'value' in inputs && typeof inputs.value === 'number') {
+      inputs.value = options.width;
+    } else if ('width' in inputs && typeof inputs.width === 'number') {
+      inputs.width = options.width;
+    }
+
+    if (title === 'height' && 'value' in inputs && typeof inputs.value === 'number') {
+      inputs.value = options.height;
+    } else if ('height' in inputs && typeof inputs.height === 'number') {
+      inputs.height = options.height;
+    }
+
+    if (title === 'length' && 'value' in inputs && typeof inputs.value === 'number') {
+      inputs.value = Math.max(1, Math.round(options.duration * frameRate));
+    }
+
+    if (
+      title === 'duration' &&
+      classType === 'primitivefloat' &&
+      'value' in inputs &&
+      typeof inputs.value === 'number'
+    ) {
+      inputs.value = options.duration;
+    }
+
     if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
     if ('noise_seed' in inputs && typeof inputs.noise_seed === 'number') inputs.noise_seed = options.seed;
     if ('steps' in inputs && typeof inputs.steps === 'number') inputs.steps = options.steps;
     if ('duration' in inputs && typeof inputs.duration === 'number') inputs.duration = options.duration;
     if ('seconds' in inputs && typeof inputs.seconds === 'number') inputs.seconds = options.duration;
 
-    if (options.startImageName && 'image' in inputs && typeof inputs.image === 'string') {
-      inputs.image = firstImagePatched && options.endImageName ? options.endImageName : options.startImageName;
-      firstImagePatched = true;
+    if (
+      options.startImageName &&
+      classType === 'loadimage' &&
+      'image' in inputs &&
+      typeof inputs.image === 'string'
+    ) {
+      if (title.includes('first') || title === 'load image') {
+        inputs.image = options.startImageName;
+      } else if (title.includes('last')) {
+        inputs.image = options.endImageName || options.startImageName;
+      } else if (!firstImagePatched) {
+        inputs.image = options.startImageName;
+        firstImagePatched = true;
+      } else {
+        inputs.image = options.endImageName || options.startImageName;
+      }
+    }
+
+    if (
+      options.audioName &&
+      classType === 'loadaudio' &&
+      'audio' in inputs &&
+      typeof inputs.audio === 'string'
+    ) {
+      inputs.audio = options.audioName;
+      delete inputs.audioUI;
     }
   });
 
@@ -245,7 +374,9 @@ const buildComfyViewUrl = (apiBase: string, file: any): string => {
   params.set('filename', String(file.filename || ''));
   if (file.subfolder) params.set('subfolder', String(file.subfolder));
   if (file.type) params.set('type', String(file.type));
-  return `${apiBase}/view?${params.toString()}`;
+  const baseViewUrl = buildComfyApiUrl(apiBase, '/view');
+  const separator = baseViewUrl.includes('?') ? '&' : '?';
+  return `${baseViewUrl}${separator}${params.toString()}`;
 };
 
 const callComfyVideoApi = async (
@@ -259,6 +390,9 @@ const callComfyVideoApi = async (
     const { width, height } = getSizeFromAspectRatio(aspectRatio);
     const workflowName = model.params.workflowName || model.apiModel || model.id;
     console.info('[ComfyUI Video] Start generation:', { apiBase, workflowName });
+    if (!options.startImage) {
+      throw new Error('ComfyUI 图生视频工作流需要参考图（首帧），请先生成或选择关键帧图片。');
+    }
     const workflow = await loadComfyWorkflowTemplate(workflowName);
     const startImageName = options.startImage
       ? await uploadComfyImage(apiBase, options.startImage, `bigbanana-start-${Date.now()}.png`)
@@ -266,6 +400,18 @@ const callComfyVideoApi = async (
     const endImageName = options.endImage
       ? await uploadComfyImage(apiBase, options.endImage, `bigbanana-end-${Date.now()}.png`)
       : undefined;
+    let audioName: string | undefined;
+    if (options.audioUrl) {
+      const audioMatch = options.audioUrl.match(/^data:([a-zA-Z0-9.+/-]+);base64,/);
+      const audioExt = guessMediaExtension(audioMatch?.[1] || 'audio/wav', 'wav');
+      audioName = await uploadComfyAudio(
+        apiBase,
+        options.audioUrl,
+        `bigbanana-audio-${Date.now()}.${audioExt}`
+      );
+    } else if (model.params.supportsAudio) {
+      console.warn('[ComfyUI Video] 当前工作流支持音频，但镜头未提供配音，将使用工作流默认音频。');
+    }
     const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
     const prompt = patchComfyVideoWorkflow(workflow, {
       prompt: options.prompt,
@@ -276,11 +422,20 @@ const callComfyVideoApi = async (
       duration,
       startImageName,
       endImageName,
+      audioName,
     });
-    console.info('[ComfyUI Video] Workflow patched:', { width, height, seed, steps: model.params.steps || 20, duration });
+    console.info('[ComfyUI Video] Workflow patched:', {
+      width,
+      height,
+      seed,
+      steps: model.params.steps || 20,
+      duration,
+      hasEndFrame: !!endImageName,
+      hasAudio: !!audioName,
+    });
 
     const clientId = `bigbanana-video-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const promptUrl = `${apiBase}/prompt`;
+    const promptUrl = buildComfyApiUrl(apiBase, '/prompt');
     console.info('[ComfyUI Video] POST prompt:', promptUrl);
     const queueResponse = await fetch(promptUrl, {
       method: 'POST',
@@ -301,7 +456,7 @@ const callComfyVideoApi = async (
 
     for (let i = 0; i < COMFYUI_MAX_POLLS; i += 1) {
       await new Promise(resolve => setTimeout(resolve, COMFYUI_POLL_INTERVAL_MS));
-      const historyUrl = `${apiBase}/history/${promptId}`;
+      const historyUrl = buildComfyApiUrl(apiBase, `/history/${promptId}`);
       const historyResponse = await fetch(historyUrl);
       if (!historyResponse.ok) {
         if (i % 10 === 0) console.warn('[ComfyUI Video] History polling failed:', historyUrl, historyResponse.status);
@@ -688,8 +843,8 @@ export const callVideoApi = async (
 
   const apiBase = getApiBaseUrlForModel(activeModel.id);
 
-  if (activeModel.params.mode === 'comfyui') {
-    return callComfyVideoApi(options, activeModel, resolveComfyApiBaseUrl(apiBase, activeModel.endpoint));
+  if (isComfyUiVideoModel(activeModel)) {
+    return callComfyVideoApi(options, activeModel, apiBase);
   }
 
   // 获取 API 配置
